@@ -99,6 +99,12 @@ export function useKnowledge() {
   useEffect(() => {
     let active = true
     let subscription: { unsubscribe(): void } | undefined
+    if (typeof indexedDB === 'undefined') {
+      setError('浏览器未提供 IndexedDB。请允许此站点使用本地存储。')
+      setLoading(false)
+      setStatus('error')
+      return
+    }
     void loadCards()
       .then((initial) => {
         if (!active) return

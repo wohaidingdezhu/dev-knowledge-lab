@@ -50,6 +50,22 @@ export function searchCards(
   tag: string | null,
 ): SearchResult[] {
   const tokens = tokensFor(query)
+  if (!tokens.length) {
+    return cards
+      .filter((card) => tag === null || card.tags.includes(tag))
+      .sort(
+        (left, right) => timestamp(right.updatedAt) - timestamp(left.updatedAt),
+      )
+      .map((card) => ({
+        card,
+        matchField: null,
+        snippet: snippetAround(
+          plainMarkdown(card.body.slice(0, 500)) ||
+            [card.html, card.css, card.js].join('\n').slice(0, 500),
+          [],
+        ),
+      }))
+  }
   const results: (SearchResult & { relevance: number[]; index: number })[] = []
 
   cards.forEach((card, index) => {

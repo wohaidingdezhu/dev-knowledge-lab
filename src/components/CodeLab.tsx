@@ -15,6 +15,7 @@ import {
   TriangleAlert,
 } from 'lucide-react'
 import type { Card } from '../lib/types'
+import { SourceEditor } from './LazySourceEditor'
 import {
   buildSandboxDocument,
   MAX_PREVIEW_MESSAGES,
@@ -52,8 +53,6 @@ export function CodeLab({ card, onChange, disabled = false }: CodeLabProps) {
   const [ready, setReady] = useState(false)
   const [limited, setLimited] = useState(false)
   const iframeRef = useRef<HTMLIFrameElement>(null)
-  const linesRef = useRef<HTMLDivElement>(null)
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
   const editorId = useId()
   const activeRun = run?.cardId === card.id ? run : null
   const activeFile = languages.find((item) => item.id === language)!
@@ -124,13 +123,6 @@ export function CodeLab({ card, onChange, disabled = false }: CodeLabProps) {
     setEntries([])
     setReady(false)
     setLimited(false)
-  }
-
-  function handleEditorKey(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
-      event.preventDefault()
-      runExample()
-    }
   }
 
   function handleTabKey(
@@ -220,35 +212,16 @@ export function CodeLab({ card, onChange, disabled = false }: CodeLabProps) {
             id={`${editorId}-editor`}
             aria-labelledby={`${editorId}-tab-${language}`}
           >
-            <div className="lab-line-numbers" ref={linesRef} aria-hidden="true">
-              {card[language].split('\n').map((_, index) => (
-                <span key={index}>{index + 1}</span>
-              ))}
-            </div>
-            <textarea
-              ref={textareaRef}
-              className="lab-textarea"
+            <SourceEditor
+              key={language}
+              className="lab-source-editor"
+              language={language}
+              label={`${activeFile.label} 代码`}
               maxLength={250000}
-              aria-label={`${activeFile.label} 代码`}
               value={card[language]}
-              onChange={(event) => onChange({ [language]: event.target.value })}
-              onKeyDown={handleEditorKey}
-              onScroll={(event) => {
-                if (linesRef.current)
-                  linesRef.current.scrollTop = event.currentTarget.scrollTop
-              }}
-              spellCheck={false}
-              autoCapitalize="off"
-              autoCorrect="off"
-              wrap="off"
+              onChange={(value) => onChange({ [language]: value })}
+              onRun={runExample}
               disabled={disabled}
-              placeholder={
-                language === 'html'
-                  ? '<h1>Hello, world.</h1>'
-                  : language === 'css'
-                    ? 'h1 { color: #5268e8; }'
-                    : "console.log('开始你的实验');"
-              }
             />
           </div>
           <div className="lab-editor-footer">

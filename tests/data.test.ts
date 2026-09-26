@@ -1,4 +1,5 @@
 import 'fake-indexeddb/auto'
+import Dexie from 'dexie'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ConflictError, KnowledgeDB } from '../src/lib/db'
 import { makeSeedCards } from '../src/lib/seeds'
@@ -16,6 +17,39 @@ afterEach(async () => {
 })
 
 describe('local persistence', () => {
+  it('upgrades a v1 database without replacing legacy card content', async () => {
+    const name = `legacy-knowledge-${crypto.randomUUID()}`
+    const legacy = new Dexie(name)
+    legacy
+      .version(1)
+      .stores({ cards: '&id, updatedAt, *tags', metadata: '&key' })
+    const seed = makeSeedCards('2025-01-01T00:00:00.000Z')[0]
+    const {
+      source: _source,
+      html: _html,
+      css: _css,
+      js: _js,
+      revision: _revision,
+      ...oldCard
+    } = seed
+    await legacy.table('cards').add(oldCard)
+    legacy.close()
+    const upgraded = new KnowledgeDB(name)
+    try {
+      expect(await upgraded.cards.get(seed.id)).toEqual({
+        ...seed,
+        source: '',
+        html: '',
+        css: '',
+        js: '',
+        revision: 1,
+      })
+      expect(await upgraded.loadCards()).toHaveLength(1)
+    } finally {
+      await upgraded.delete()
+    }
+  })
+
   it('seeds once, including when every example has been deleted', async () => {
     expect(await database.loadCards()).toHaveLength(3)
     expect(await database.loadCards()).toHaveLength(3)

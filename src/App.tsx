@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import {
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react'
 import {
   ArrowDown,
   ArrowLeft,
@@ -29,12 +36,21 @@ import {
   Upload,
   X,
 } from 'lucide-react'
-import { createCard, deleteCard, importCards, restoreCard } from './lib/db'
-import { parseBackup, serializeBackup, validateSource } from './lib/backup'
+import {
+  createCard,
+  deleteCard,
+  demoMode,
+  importCards,
+  resetDemoCards,
+  restoreCard,
+} from './lib/db'
+import { createBackupFile, parseBackupFile, validateSource } from './lib/backup'
 import { searchCards } from './lib/search'
 import { useKnowledge } from './lib/useKnowledge'
+import { useRegisterSW } from 'virtual:pwa-register/react'
 import type { Card } from './lib/types'
 import { CodeLab } from './components/CodeLab'
+import { SourceEditor } from './components/LazySourceEditor'
 import { Highlight, Markdown } from './components/Markdown'
 
 const date = (value: string) =>
@@ -59,17 +75,25 @@ function Dialog({
   onClose: () => void
 }) {
   const ref = useRef<HTMLDialogElement>(null)
+  const titleId = useId()
+  const descriptionId = useId()
   useEffect(() => {
     const dialog = ref.current
+    const previousFocus = document.activeElement
     dialog?.showModal()
+    dialog?.querySelector<HTMLButtonElement>('.dialog-heading button')?.focus()
     return () => {
       dialog?.close()
+      if (previousFocus instanceof HTMLElement && previousFocus.isConnected)
+        previousFocus.focus()
     }
   }, [])
   return (
     <dialog
       ref={ref}
       className="dialog"
+      aria-labelledby={titleId}
+      aria-describedby={description ? descriptionId : undefined}
       onCancel={(event) => {
         event.preventDefault()
         onClose()
@@ -79,12 +103,16 @@ function Dialog({
       }}
     >
       <div className="dialog-heading">
-        <h2>{title}</h2>
+        <h2 id={titleId}>{title}</h2>
         <button className="icon-button" aria-label="关闭弹窗" onClick={onClose}>
           <X size={19} />
         </button>
       </div>
-      {description && <p className="dialog-description">{description}</p>}
+      {description && (
+        <p id={descriptionId} className="dialog-description">
+          {description}
+        </p>
+      )}
       {children}
     </dialog>
   )
@@ -145,6 +173,11 @@ function Tags({
 export default function App() {
   const { cards, cardsRef, loading, error, status, update, flush, discard } =
     useKnowledge()
+  const {
+    needRefresh: [needRefresh, setNeedRefresh],
+    offlineReady: [offlineReady, setOfflineReady],
+    updateServiceWorker,
+  } = useRegisterSW()
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [tag, setTag] = useState<string | null>(null)
@@ -154,7 +187,7 @@ export default function App() {
   const [mobileDetail, setMobileDetail] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [modal, setModal] = useState<
-    'backup' | 'delete' | 'help' | 'discard' | null
+    'backup' | 'delete' | 'help' | 'discard' | 'reset-demo' | null
   >(null)
   const [imported, setImported] = useState<Card[] | null>(null)
   const [importName, setImportName] = useState('')
@@ -164,6 +197,7 @@ export default function App() {
   const [notice, setNotice] = useState('')
   const [deleted, setDeleted] = useState<Card | null>(null)
   const [cursor, setCursor] = useState(0)
+  const [visibleCount, setVisibleCount] = useState(100)
   const searchRef = useRef<HTMLInputElement>(null)
   const titleRef = useRef<HTMLInputElement>(null)
   const results = useMemo(
@@ -194,6 +228,7 @@ export default function App() {
   }, [cards, loading, selectedId])
   useEffect(() => {
     setCursor(0)
+    setVisibleCount(100)
   }, [query, tag, collection])
   useEffect(() => {
     const handle = (event: KeyboardEvent) => {
@@ -248,14 +283,13 @@ export default function App() {
   }
   const exportBackup = async () => {
     const saved = await flush()
+    setBusy(true)
     try {
-      const blob = new Blob([serializeBackup(cardsRef.current)], {
-        type: 'application/json',
-      })
-      const url = URL.createObjectURL(blob)
+      const backup = await createBackupFile(cardsRef.current)
+      const url = URL.createObjectURL(backup.data)
       const anchor = document.createElement('a')
       anchor.href = url
-      anchor.download = `pianduan-backup-${new Date().toISOString().slice(0, 10)}.json`
+      anchor.download = `pianduan-backup-${new Date().toISOString().slice(0, 10)}.${backup.extension}`
       anchor.click()
       setTimeout(() => URL.revokeObjectURL(url), 1000)
       setNotice(
@@ -265,6 +299,8 @@ export default function App() {
       )
     } catch (cause) {
       setNotice(errorText(cause))
+    } finally {
+      setBusy(false)
     }
   }
   const performImport = async () => {
@@ -470,7 +506,7 @@ export default function App() {
           </div>
           <div className="topbar-right">
             <span className="local-badge">
-              <span /> 本地优先
+              <span /> {demoMode ? '独立演示空间' : '本地优先'}
             </span>
             <button
               className="icon-button"
@@ -483,6 +519,13 @@ export default function App() {
         </header>
         <div className="workspace">
           <section className="collection-panel" aria-label="卡片列表">
+            {error && !selected && (
+              <div className="storage-error" role="alert">
+                <strong>浏览器存储不可用</strong>
+                <span>{error}</span>
+                <span>请检查浏览器的站点存储权限，然后重新打开页面。</span>
+              </div>
+            )}
             <div className="collection-heading">
               <div>
                 <div className="eyebrow">YOUR SECOND BRAIN</div>
@@ -522,15 +565,17 @@ export default function App() {
                 onKeyDown={(event) => {
                   if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
                     event.preventDefault()
-                    setCursor((value) =>
-                      Math.max(
+                    setCursor((value) => {
+                      const next = Math.max(
                         0,
                         Math.min(
                           results.length - 1,
                           value + (event.key === 'ArrowDown' ? 1 : -1),
                         ),
-                      ),
-                    )
+                      )
+                      setVisibleCount((count) => Math.max(count, next + 1))
+                      return next
+                    })
                   }
                   if (event.key === 'Enter' && results[cursor]) {
                     event.preventDefault()
@@ -589,74 +634,81 @@ export default function App() {
                   <p>正在打开知识库…</p>
                 </div>
               ) : results.length ? (
-                results.map(({ card, matchField, snippet }, index) => (
-                  <button
-                    id={`result-${card.id}`}
-                    role="option"
-                    aria-selected={card.id === selectedId}
-                    className={`card-item ${card.id === selectedId ? 'selected' : ''} ${query && index === cursor ? 'keyboard-current' : ''}`}
-                    key={card.id}
-                    onClick={() => void select(card)}
-                    onKeyDown={(event) => {
-                      if (
-                        event.key === 'ArrowDown' ||
-                        event.key === 'ArrowUp'
-                      ) {
-                        event.preventDefault()
-                        const next = Math.max(
-                          0,
-                          Math.min(
-                            results.length - 1,
-                            index + (event.key === 'ArrowDown' ? 1 : -1),
-                          ),
-                        )
-                        document
-                          .getElementById(`result-${results[next].card.id}`)
-                          ?.focus()
-                        setCursor(next)
-                      }
-                    }}
-                  >
-                    <div className="card-item-heading">
-                      <span
-                        className={`file-icon ${hasCode(card) ? 'with-code' : ''}`}
-                      >
-                        {hasCode(card) ? (
-                          <FileCode2 size={17} />
-                        ) : (
-                          <FileText size={17} />
-                        )}
-                      </span>
-                      <span className="card-date">{date(card.updatedAt)}</span>
-                    </div>
-                    <h2>
-                      <Highlight
-                        text={card.title || '未命名卡片'}
-                        query={query}
-                      />
-                    </h2>
-                    <p>
-                      <Highlight
-                        text={snippet || '一张空白卡片，等待你的下一个发现。'}
-                        query={query}
-                      />
-                    </p>
-                    <div className="card-item-footer">
-                      <span className="card-tags">
-                        {card.tags.slice(0, 3).map((item) => (
-                          <span className="tag" key={item}>
-                            <Highlight text={item} query={query} />
-                          </span>
-                        ))}
-                      </span>
-                      {query && matchField === 'code' ? (
-                        <span className="code-match">代码匹配</span>
-                      ) : hasCode(card) ? (
-                        <Code2 size={14} />
-                      ) : null}
-                    </div>
-                  </button>
-                ))
+                results
+                  .slice(0, visibleCount)
+                  .map(({ card, matchField, snippet }, index) => (
+                    <button
+                      id={`result-${card.id}`}
+                      role="option"
+                      aria-selected={card.id === selectedId}
+                      className={`card-item ${card.id === selectedId ? 'selected' : ''} ${query && index === cursor ? 'keyboard-current' : ''}`}
+                      key={card.id}
+                      onClick={() => void select(card)}
+                      onKeyDown={(event) => {
+                        if (
+                          event.key === 'ArrowDown' ||
+                          event.key === 'ArrowUp'
+                        ) {
+                          event.preventDefault()
+                          const next = Math.max(
+                            0,
+                            Math.min(
+                              results.length - 1,
+                              index + (event.key === 'ArrowDown' ? 1 : -1),
+                            ),
+                          )
+                          setVisibleCount((count) => Math.max(count, next + 1))
+                          requestAnimationFrame(() =>
+                            document
+                              .getElementById(`result-${results[next].card.id}`)
+                              ?.focus(),
+                          )
+                          setCursor(next)
+                        }
+                      }}
+                    >
+                      <div className="card-item-heading">
+                        <span
+                          className={`file-icon ${hasCode(card) ? 'with-code' : ''}`}
+                        >
+                          {hasCode(card) ? (
+                            <FileCode2 size={17} />
+                          ) : (
+                            <FileText size={17} />
+                          )}
+                        </span>
+                        <span className="card-date">
+                          {date(card.updatedAt)}
+                        </span>
+                      </div>
+                      <h2>
+                        <Highlight
+                          text={card.title || '未命名卡片'}
+                          query={query}
+                        />
+                      </h2>
+                      <p>
+                        <Highlight
+                          text={snippet || '一张空白卡片，等待你的下一个发现。'}
+                          query={query}
+                        />
+                      </p>
+                      <div className="card-item-footer">
+                        <span className="card-tags">
+                          {card.tags.slice(0, 3).map((item) => (
+                            <span className="tag" key={item}>
+                              <Highlight text={item} query={query} />
+                            </span>
+                          ))}
+                        </span>
+                        {query && matchField === 'code' ? (
+                          <span className="code-match">代码匹配</span>
+                        ) : hasCode(card) ? (
+                          <Code2 size={14} />
+                        ) : null}
+                      </div>
+                    </button>
+                  ))
               ) : (
                 <div className="list-empty">
                   <Search size={30} strokeWidth={1.3} />
@@ -683,6 +735,14 @@ export default function App() {
                 </div>
               )}
             </div>
+            {results.length > visibleCount && (
+              <button
+                className="load-more"
+                onClick={() => setVisibleCount((count) => count + 100)}
+              >
+                加载更多（已显示 {visibleCount} / {results.length}）
+              </button>
+            )}
             <div className="list-bottom">
               <span>
                 <ArrowUp size={11} />
@@ -819,15 +879,14 @@ export default function App() {
                       </div>
                       {editing ? (
                         <>
-                          <textarea
+                          <SourceEditor
                             className="markdown-editor"
                             maxLength={500000}
-                            aria-label="Markdown 正文"
-                            placeholder="写下你的发现。支持 Markdown、列表和代码块…"
-                            spellCheck={false}
+                            language="markdown"
+                            label="Markdown 正文"
                             value={selected.body}
-                            onChange={(event) =>
-                              update(selected.id, { body: event.target.value })
+                            onChange={(value) =>
+                              update(selected.id, { body: value })
                             }
                           />
                           <div className="editor-hint">
@@ -942,6 +1001,28 @@ export default function App() {
           </section>
         </div>
       </main>
+      {needRefresh && (
+        <div className="update-banner" role="status">
+          <span>新版本已准备好。保存当前修改后可以更新。</span>
+          <button
+            onClick={async () => {
+              if (await flush()) await updateServiceWorker(true)
+              else setNotice('请先解决未保存的修改，再更新应用。')
+            }}
+          >
+            保存并更新
+          </button>
+          <button aria-label="稍后更新" onClick={() => setNeedRefresh(false)}>
+            <X size={14} />
+          </button>
+        </div>
+      )}
+      {offlineReady && !needRefresh && (
+        <div className="update-banner" role="status">
+          <span>离线资源已准备好，下次可离线重新打开。</span>
+          <button onClick={() => setOfflineReady(false)}>知道了</button>
+        </div>
+      )}
       {(notice || deleted) && (
         <div className="toast" role="status">
           <Check size={17} />
@@ -1020,6 +1101,45 @@ export default function App() {
           </div>
         </Dialog>
       )}
+      {modal === 'reset-demo' && (
+        <Dialog
+          title="重置演示空间？"
+          description="这会清除演示空间中的卡片并恢复三张示例，不会影响普通工作区。需要保留的演示内容请先导出。"
+          onClose={() => setModal(null)}
+        >
+          <div className="dialog-actions">
+            <button className="secondary-button" onClick={() => setModal(null)}>
+              取消
+            </button>
+            <button
+              className="danger-button"
+              disabled={busy}
+              onClick={async () => {
+                if (!(await flush())) {
+                  setNotice('当前修改尚未保存；请先导出备份后重试。')
+                  return
+                }
+                setBusy(true)
+                try {
+                  await resetDemoCards()
+                  await discard()
+                  setSelectedId(null)
+                  setQuery('')
+                  setTag(null)
+                  setModal(null)
+                  setNotice('演示空间已恢复三张示例卡片。')
+                } catch (cause) {
+                  setNotice(errorText(cause))
+                } finally {
+                  setBusy(false)
+                }
+              }}
+            >
+              确认重置演示空间
+            </button>
+          </div>
+        </Dialog>
+      )}
       {modal === 'backup' && (
         <Dialog
           title="让每个片段，都有备份。"
@@ -1041,7 +1161,7 @@ export default function App() {
               onClick={() => void exportBackup()}
             >
               <Download size={14} />
-              导出 JSON
+              {busy ? '正在准备…' : '导出备份'}
             </button>
           </div>
           <div className="import-section">
@@ -1050,24 +1170,25 @@ export default function App() {
             </h3>
             <label className="file-drop">
               <Upload size={22} />
-              <strong>{importName || '选择 JSON 备份文件'}</strong>
-              <span>版本校验通过后，才会写入知识库 · 最大 10 MB</span>
+              <strong>{importName || '选择 JSON / ZIP 备份文件'}</strong>
+              <span>导入前检查全部卡片与校验值 · ZIP 最大 100 MiB</span>
               <input
-                aria-label="选择 JSON 备份文件"
+                aria-label="选择 JSON 或 ZIP 备份文件"
                 type="file"
-                accept=".json,application/json"
+                accept=".json,.zip,application/json,application/zip"
                 onChange={async (event) => {
                   const file = event.target.files?.[0]
                   if (!file) return
                   setImported(null)
                   setImportName(file.name)
                   setImportError('')
+                  setBusy(true)
                   try {
-                    if (file.size > 10 * 1024 * 1024)
-                      throw new Error('文件超过 10 MB 限制。')
-                    setImported(parseBackup(await file.text()))
+                    setImported(await parseBackupFile(file))
                   } catch (cause) {
                     setImportError(errorText(cause))
+                  } finally {
+                    setBusy(false)
                   }
                   event.target.value = ''
                 }}
@@ -1154,6 +1275,16 @@ export default function App() {
           <div className="help-note">
             实验预览与宿主页面分离，常见网络请求受限。请仅运行可信代码；死循环仍可能拖慢页面。当前版本不提供云同步。
           </div>
+          {demoMode && (
+            <div className="dialog-actions">
+              <button
+                className="secondary-button"
+                onClick={() => setModal('reset-demo')}
+              >
+                重置演示卡片
+              </button>
+            </div>
+          )}
         </Dialog>
       )}
     </div>

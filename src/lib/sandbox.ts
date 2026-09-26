@@ -113,6 +113,11 @@ export function buildSandboxDocument(
   window.addEventListener('error', (event) => {
     report({kind: 'error', text: String(event.message || '示例执行失败').slice(0, maxText), line: event.lineno || null, column: event.colno || null});
   });
+  // WebKit hides details of uncaught errors from dynamically appended scripts.
+  // Catch runtime errors inside the opaque preview so their message reaches the console.
+  window.__labReportRuntimeError = (error) => {
+    report({kind: 'error', text: describe(error).slice(0, maxText), line: null, column: null});
+  };
   window.addEventListener('unhandledrejection', (event) => {
     report({kind: 'error', text: ('Unhandled rejection: ' + describe(event.reason)).slice(0, maxText), line: null, column: null});
   });
@@ -129,7 +134,7 @@ export function buildSandboxDocument(
   document.head.appendChild(style);
   const example = document.createElement('script');
   example.nonce = input.nonce;
-  example.textContent = input.js + '\\n//# sourceURL=knowledge-lab-example.js';
+  example.textContent = 'try {\\n' + input.js + '\\n} catch (error) { window.__labReportRuntimeError(error); }\\n//# sourceURL=knowledge-lab-example.js';
   document.body.appendChild(example);
   post({kind: 'ready'});
 })();

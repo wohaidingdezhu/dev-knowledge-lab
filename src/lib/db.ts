@@ -30,6 +30,21 @@ export class KnowledgeDB extends Dexie {
   constructor(name = 'dev-knowledge-lab') {
     super(name)
     this.version(1).stores({ cards: '&id, updatedAt, *tags', metadata: '&key' })
+    this.version(2)
+      .stores({ cards: '&id, updatedAt, *tags', metadata: '&key' })
+      .upgrade(async (transaction) => {
+        await transaction
+          .table<Card, string>('cards')
+          .toCollection()
+          .modify((card) => {
+            card.tags ??= []
+            card.source ??= ''
+            card.html ??= ''
+            card.css ??= ''
+            card.js ??= ''
+            card.revision ??= 1
+          })
+      })
   }
 
   async loadCards(): Promise<Card[]> {
@@ -143,9 +158,27 @@ export class KnowledgeDB extends Dexie {
       return { added: toAdd.length, skipped }
     })
   }
+
+  async resetExamples(): Promise<Card[]> {
+    const examples = makeSeedCards()
+    await this.transaction('rw', this.cards, this.metadata, async () => {
+      await this.cards.clear()
+      await this.cards.bulkAdd(examples)
+      await this.metadata.put({
+        key: 'initialized',
+        value: new Date().toISOString(),
+      })
+    })
+    return examples
+  }
 }
 
-export const db = new KnowledgeDB()
+export const demoMode =
+  typeof location !== 'undefined' &&
+  new URLSearchParams(location.search).get('demo') === '1'
+export const db = new KnowledgeDB(
+  demoMode ? 'dev-knowledge-lab-demo' : 'dev-knowledge-lab',
+)
 
 export const loadCards = () => db.loadCards()
 export const createCard = (template = false) => db.createCard(template)
@@ -154,3 +187,7 @@ export const deleteCard = (card: Card) => db.deleteCard(card)
 export const restoreCard = (card: Card) => db.restoreCard(card)
 export const importCards = (cards: Card[], strategy: ImportStrategy) =>
   db.importCards(cards, strategy)
+export const resetDemoCards = async () => {
+  if (!demoMode) throw new Error('只有演示空间可以重置示例。')
+  return db.resetExamples()
+}
