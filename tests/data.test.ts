@@ -144,7 +144,13 @@ describe('local persistence', () => {
       latest: null,
     })
     const restored = await database.restoreCard(original)
-    expect(restored).toEqual({ ...original, revision: original.revision + 1 })
+    expect({ ...restored, updatedAt: original.updatedAt }).toEqual({
+      ...original,
+      revision: original.revision + 1,
+    })
+    expect(Date.parse(restored.updatedAt)).toBeGreaterThanOrEqual(
+      Date.parse(original.updatedAt),
+    )
     await expect(database.saveCard(original)).rejects.toBeInstanceOf(
       ConflictError,
     )
@@ -182,6 +188,83 @@ describe('local persistence', () => {
     await expect(database.createCard()).rejects.toThrow('Storage unavailable')
     database.cards.hook('creating').unsubscribe(failingHook)
     expect(await database.cards.count()).toBe(0)
+  })
+
+  it('keeps bounded history and can restore an older version without losing the current one', async () => {
+    let current = await database.createCard()
+    for (let index = 1; index <= 22; index++)
+      current = await database.saveCard({ ...current, body: `第 ${index} 版` })
+    const history = await database.listHistory(current.id)
+    expect(history).toHaveLength(20)
+    expect(history[0].card.body).toBe('第 21 版')
+    expect(history.at(-1)?.card.body).toBe('第 2 版')
+    const restored = await database.restoreVersion(
+      current.id,
+      history.at(-1)!.id,
+      current.revision,
+    )
+    expect(restored.body).toBe('第 2 版')
+    expect(restored.revision).toBe(current.revision + 1)
+    expect((await database.listHistory(current.id))[0].card.body).toBe(
+      '第 22 版',
+    )
+    await expect(
+      database.restoreVersion(current.id, history[0].id, current.revision),
+    ).rejects.toBeInstanceOf(ConflictError)
+  })
+
+  it('keeps deleted cards in the recycle bin across reopening and restores them once', async () => {
+    const original = await database.createCard()
+    await database.deleteCard(original)
+    database.close()
+    await database.open()
+    expect((await database.listTrash()).map((entry) => entry.id)).toEqual([
+      original.id,
+    ])
+    const restored = await database.restoreDeletedCard(original.id)
+    expect(restored.revision).toBe(original.revision + 1)
+    expect(await database.listTrash()).toEqual([])
+    await expect(database.restoreDeletedCard(original.id)).rejects.toThrow(
+      /找不到/,
+    )
+  })
+
+  it('permanently removes a recycled card and its history only when requested', async () => {
+    const original = await database.createCard()
+    const changed = await database.saveCard({ ...original, body: '历史正文' })
+    await database.deleteCard(changed)
+    expect(await database.listHistory(original.id)).toHaveLength(2)
+    await database.purgeDeletedCard(original.id)
+    expect(await database.listTrash()).toEqual([])
+    expect(await database.listHistory(original.id)).toEqual([])
+    await expect(database.restoreDeletedCard(original.id)).rejects.toThrow(
+      /找不到/,
+    )
+  })
+
+  it('resets demo data together with its history and recycle bin', async () => {
+    const first = await database.createCard()
+    const saved = await database.saveCard({ ...first, body: '实验修改' })
+    await database.deleteCard(saved)
+    expect(await database.listTrash()).toHaveLength(1)
+    await database.resetExamples()
+    expect(await database.cards.count()).toBe(3)
+    expect(await database.listTrash()).toEqual([])
+    expect(await database.listHistory(first.id)).toEqual([])
+  })
+
+  it('rolls back a failed save along with its history snapshot', async () => {
+    const card = await database.createCard()
+    const fail = () => {
+      throw new Error('模拟写入失败')
+    }
+    database.cards.hook('updating', fail)
+    await expect(
+      database.saveCard({ ...card, title: '新标题' }),
+    ).rejects.toThrow(/模拟/)
+    database.cards.hook('updating').unsubscribe(fail)
+    expect(await database.listHistory(card.id)).toEqual([])
+    expect(await database.cards.get(card.id)).toEqual(card)
   })
 })
 
@@ -250,5 +333,75 @@ describe('atomic backup import', () => {
       /来源链接/,
     )
     expect(await database.cards.count()).toBe(0)
+  })
+
+  it('restores selected backup cards while retaining the replaced version in history', async () => {
+    const original = makeSeedCards('2025-01-01T00:00:00.000Z')
+    await database.importCards(original, 'skip')
+    const changed = await database.saveCard({
+      ...original[0],
+      body: '当前正文',
+    })
+    const result = await database.restoreBackupCards(original, {
+      [original[0].id]: {
+        choice: 'replace',
+        expectedRevision: changed.revision,
+      },
+      [original[1].id]: {
+        choice: 'copy',
+        expectedRevision: original[1].revision,
+      },
+      [original[2].id]: {
+        choice: 'skip',
+        expectedRevision: original[2].revision,
+      },
+    })
+    expect(result).toEqual({ added: 1, replaced: 1, skipped: 1 })
+    const restored = (await database.cards.get(original[0].id))!
+    expect(restored.body).toBe(original[0].body)
+    expect(restored.revision).toBe(changed.revision + 1)
+    expect((await database.listHistory(original[0].id))[0].card.body).toBe(
+      '当前正文',
+    )
+    expect(await database.cards.count()).toBe(4)
+  })
+
+  it('rejects a changed card and rolls back earlier backup additions', async () => {
+    const original = await database.createCard()
+    const changed = await database.saveCard({
+      ...original,
+      body: '另一页面修改',
+    })
+    const extra = { ...original, id: crypto.randomUUID() }
+    await expect(
+      database.restoreBackupCards([extra, original], {
+        [original.id]: {
+          choice: 'replace',
+          expectedRevision: original.revision,
+        },
+      }),
+    ).rejects.toBeInstanceOf(ConflictError)
+    expect(await database.cards.get(extra.id)).toBeUndefined()
+    expect(await database.cards.get(original.id)).toEqual(changed)
+    expect(await database.listHistory(original.id)).toHaveLength(1)
+  })
+
+  it('removes a recycled entry when its card is brought back from backup', async () => {
+    const card = await database.createCard()
+    await database.deleteCard(card)
+    expect(await database.restoreBackupCards([card], {})).toEqual({
+      added: 1,
+      skipped: 0,
+      replaced: 0,
+    })
+    expect(await database.listTrash()).toEqual([])
+    expect(await database.cards.get(card.id)).toMatchObject({
+      id: card.id,
+      body: card.body,
+      revision: card.revision + 1,
+    })
+    await expect(
+      database.saveCard({ ...card, body: '旧页面写入' }),
+    ).rejects.toBeInstanceOf(ConflictError)
   })
 })

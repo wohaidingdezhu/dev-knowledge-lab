@@ -29,6 +29,7 @@ import {
   Menu,
   Pencil,
   Plus,
+  History,
   Search,
   ShieldCheck,
   Sparkles,
@@ -40,15 +41,26 @@ import {
   createCard,
   deleteCard,
   demoMode,
-  importCards,
+  listHistory,
+  listTrash,
+  purgeDeletedCard,
   resetDemoCards,
+  restoreBackupCards,
   restoreCard,
+  restoreDeletedCard,
+  restoreVersion,
 } from './lib/db'
 import { createBackupFile, parseBackupFile, validateSource } from './lib/backup'
 import { searchCards } from './lib/search'
 import { useKnowledge } from './lib/useKnowledge'
 import { useRegisterSW } from 'virtual:pwa-register/react'
-import type { Card } from './lib/types'
+import type {
+  Card,
+  CardHistoryEntry,
+  DeletedCard,
+  RestoreChoice,
+  RestoreDecision,
+} from './lib/types'
 import { CodeLab } from './components/CodeLab'
 import { SourceEditor } from './components/LazySourceEditor'
 import { Highlight, Markdown } from './components/Markdown'
@@ -62,17 +74,22 @@ const hasCode = (card: Card) =>
   Boolean(card.html.trim() || card.css.trim() || card.js.trim())
 const errorText = (cause: unknown) =>
   cause instanceof Error ? cause.message : '操作失败，请重试。'
+const dateTime = (value: string) => new Date(value).toLocaleString('zh-CN')
+const cardContents = (card: Card) =>
+  `标题：${card.title}\n标签：${card.tags.join('、') || '无'}\n来源：${card.source || '无'}\n\n正文：\n${card.body}\n\nHTML：\n${card.html}\n\nCSS：\n${card.css}\n\nJavaScript：\n${card.js}`
 
 function Dialog({
   title,
   description,
   children,
   onClose,
+  wide = false,
 }: {
   title: string
   description?: string
   children: ReactNode
   onClose: () => void
+  wide?: boolean
 }) {
   const ref = useRef<HTMLDialogElement>(null)
   const titleId = useId()
@@ -91,7 +108,7 @@ function Dialog({
   return (
     <dialog
       ref={ref}
-      className="dialog"
+      className={`dialog ${wide ? 'dialog-wide' : ''}`}
       aria-labelledby={titleId}
       aria-describedby={description ? descriptionId : undefined}
       onCancel={(event) => {
@@ -187,12 +204,31 @@ export default function App() {
   const [mobileDetail, setMobileDetail] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [modal, setModal] = useState<
-    'backup' | 'delete' | 'help' | 'discard' | 'reset-demo' | null
+    | 'backup'
+    | 'delete'
+    | 'help'
+    | 'discard'
+    | 'reset-demo'
+    | 'history'
+    | 'trash'
+    | 'purge'
+    | null
   >(null)
   const [imported, setImported] = useState<Card[] | null>(null)
   const [importName, setImportName] = useState('')
   const [importError, setImportError] = useState('')
-  const [strategy, setStrategy] = useState<'skip' | 'copy'>('skip')
+  const [importExisting, setImportExisting] = useState<Record<string, Card>>(
+    () => Object.create(null),
+  )
+  const [importChoices, setImportChoices] = useState<
+    Record<string, RestoreChoice>
+  >({})
+  const [importVisible, setImportVisible] = useState(30)
+  const [backupPreviewId, setBackupPreviewId] = useState<string | null>(null)
+  const [historyEntries, setHistoryEntries] = useState<CardHistoryEntry[]>([])
+  const [deletedEntries, setDeletedEntries] = useState<DeletedCard[]>([])
+  const [pendingPurge, setPendingPurge] = useState<DeletedCard | null>(null)
+  const [historyPreviewId, setHistoryPreviewId] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState('')
   const [deleted, setDeleted] = useState<Card | null>(null)
@@ -217,10 +253,8 @@ export default function App() {
       ),
     [cards],
   )
-  const conflicts =
-    imported?.filter((card) =>
-      cards.some((existing) => existing.id === card.id),
-    ).length ?? 0
+  const importConflicts =
+    imported?.filter((card) => Object.hasOwn(importExisting, card.id)) ?? []
 
   useEffect(() => {
     if (!loading && !selectedId && cards.length)
@@ -308,12 +342,20 @@ export default function App() {
     setBusy(true)
     setImportError('')
     try {
-      const result = await importCards(imported, strategy)
+      const decisions: Record<string, RestoreDecision> = Object.create(null)
+      for (const card of importConflicts)
+        decisions[card.id] = {
+          choice: Object.hasOwn(importChoices, card.id)
+            ? importChoices[card.id]
+            : 'skip',
+          expectedRevision: importExisting[card.id].revision,
+        }
+      const result = await restoreBackupCards(imported, decisions)
       setModal(null)
       setImported(null)
       setDeleted(null)
       setNotice(
-        `导入完成：新增 ${result.added} 张，跳过 ${result.skipped} 张。`,
+        `导入完成：新增 ${result.added} 张，恢复 ${result.replaced} 张，跳过 ${result.skipped} 张。`,
       )
       setQuery('')
       setTag(null)
@@ -345,22 +387,36 @@ export default function App() {
     if (!selected) return
     setBusy(true)
     try {
-      const result = await importCards(
-        [
-          {
-            ...selected,
-            id: crypto.randomUUID(),
-            title: `${(selected.title || '未命名卡片').slice(0, 194)}（恢复副本）`,
-          },
-        ],
-        'copy',
-      )
+      const copy = {
+        ...selected,
+        id: crypto.randomUUID(),
+        title: `${(selected.title || '未命名卡片').slice(0, 194)}（恢复副本）`,
+      }
+      const result = await restoreBackupCards([copy], {})
       await discard()
       setNotice(`已保留 ${result.added} 张本地修改副本，并重新载入数据库。`)
     } catch (cause) {
       setNotice(errorText(cause))
     } finally {
       setBusy(false)
+    }
+  }
+  const openHistory = async () => {
+    if (!selected || !(await flush())) return
+    try {
+      setHistoryEntries(await listHistory(selected.id))
+      setHistoryPreviewId(null)
+      setModal('history')
+    } catch (cause) {
+      setNotice(errorText(cause))
+    }
+  }
+  const openTrash = async () => {
+    try {
+      setDeletedEntries(await listTrash())
+      setModal('trash')
+    } catch (cause) {
+      setNotice(errorText(cause))
     }
   }
   const changeCollection = (
@@ -461,11 +517,19 @@ export default function App() {
           <ArrowRight className="template-arrow" size={16} />
         </button>
         <div className="sidebar-bottom">
+          <button className="nav-item" onClick={() => void openTrash()}>
+            <Trash2 size={17} />
+            <span>回收站</span>
+          </button>
           <button
             className="nav-item"
             onClick={() => {
               setModal('backup')
               setImportError('')
+              setImported(null)
+              setImportName('')
+              setImportExisting(Object.create(null))
+              setImportChoices({})
             }}
           >
             <HardDrive size={17} />
@@ -795,6 +859,14 @@ export default function App() {
                           ? '保存中…'
                           : '未保存'}
                     </span>
+                    <button
+                      className="icon-button"
+                      aria-label="查看卡片历史版本"
+                      title="历史版本"
+                      onClick={() => void openHistory()}
+                    >
+                      <History size={16} />
+                    </button>
                     <button
                       className="icon-button"
                       aria-label="删除当前卡片"
@@ -1142,6 +1214,7 @@ export default function App() {
       )}
       {modal === 'backup' && (
         <Dialog
+          wide
           title="让每个片段，都有备份。"
           description="数据保存在当前浏览器中。定期导出一份完整备份，换设备时也能把知识带走。"
           onClose={() => {
@@ -1180,11 +1253,29 @@ export default function App() {
                   const file = event.target.files?.[0]
                   if (!file) return
                   setImported(null)
+                  setImportExisting(Object.create(null))
+                  setImportChoices({})
+                  setBackupPreviewId(null)
+                  setImportVisible(30)
                   setImportName(file.name)
                   setImportError('')
                   setBusy(true)
                   try {
-                    setImported(await parseBackupFile(file))
+                    const parsed = await parseBackupFile(file)
+                    if (!(await flush()))
+                      throw new Error(
+                        '当前修改尚未保存，请先解决保存问题后再导入。',
+                      )
+                    const byId = new Map(
+                      cardsRef.current.map((card) => [card.id, card]),
+                    )
+                    const existing: Record<string, Card> = Object.create(null)
+                    for (const card of parsed) {
+                      const current = byId.get(card.id)
+                      if (current) existing[card.id] = current
+                    }
+                    setImportExisting(existing)
+                    setImported(parsed)
                   } catch (cause) {
                     setImportError(errorText(cause))
                   } finally {
@@ -1203,37 +1294,267 @@ export default function App() {
               <div className="import-preview">
                 <p>
                   <Check size={16} />
-                  校验通过，共 {imported.length} 张卡片，{conflicts} 张 ID
-                  与现有卡片相同。
+                  校验通过，共 {imported.length} 张卡片，
+                  {importConflicts.length} 张 ID 与现有卡片相同。
                 </p>
-                <label>
-                  遇到相同 ID
-                  <select
-                    aria-label="导入冲突处理"
-                    value={strategy}
-                    onChange={(event) =>
-                      setStrategy(event.target.value as 'skip' | 'copy')
-                    }
-                  >
-                    <option value="skip">跳过重复卡片，保留现有内容</option>
-                    <option value="copy">另存为新副本，保留两份内容</option>
-                  </select>
-                </label>
+                {importConflicts.length > 0 && (
+                  <div className="restore-conflicts">
+                    <strong>逐张决定如何处理相同 ID 的卡片</strong>
+                    <p>
+                      默认保留现有内容。恢复备份前会把现有内容存入历史版本；导入期间有其他页面修改时会停止整个导入。
+                    </p>
+                    {importConflicts.slice(0, importVisible).map((card) => {
+                      const current = importExisting[card.id]
+                      return (
+                        <div className="restore-conflict" key={card.id}>
+                          <div>
+                            <strong>
+                              {current.title || card.title || '未命名卡片'}
+                            </strong>
+                            <small>
+                              现有：{dateTime(current.updatedAt)} · 备份：
+                              {dateTime(card.updatedAt)}
+                            </small>
+                          </div>
+                          <div className="restore-conflict-actions">
+                            <button
+                              className="text-button"
+                              onClick={() =>
+                                setBackupPreviewId(
+                                  backupPreviewId === card.id ? null : card.id,
+                                )
+                              }
+                            >
+                              {backupPreviewId === card.id
+                                ? '收起内容'
+                                : '对比内容'}
+                            </button>
+                            <select
+                              aria-label={`处理 ${card.title || '未命名卡片'} 的备份冲突`}
+                              value={
+                                Object.hasOwn(importChoices, card.id)
+                                  ? importChoices[card.id]
+                                  : 'skip'
+                              }
+                              onChange={(event) =>
+                                setImportChoices((choices) => ({
+                                  ...choices,
+                                  [card.id]: event.target
+                                    .value as RestoreChoice,
+                                }))
+                              }
+                            >
+                              <option value="skip">保留现有</option>
+                              <option value="copy">保留两份</option>
+                              <option value="replace">恢复备份版本</option>
+                            </select>
+                          </div>
+                          {backupPreviewId === card.id && (
+                            <div className="restore-comparison">
+                              <div>
+                                <strong>现有内容</strong>
+                                <pre>{cardContents(current)}</pre>
+                              </div>
+                              <div>
+                                <strong>备份内容</strong>
+                                <pre>{cardContents(card)}</pre>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                    {importConflicts.length > importVisible && (
+                      <button
+                        className="secondary-button"
+                        onClick={() => setImportVisible((count) => count + 30)}
+                      >
+                        查看更多冲突（已显示 {importVisible} /{' '}
+                        {importConflicts.length}）
+                      </button>
+                    )}
+                  </div>
+                )}
                 <button
                   className="primary-button"
                   disabled={busy}
                   onClick={() => void performImport()}
                 >
                   <Upload size={15} />
-                  确认导入 {imported.length} 张卡片
+                  确认导入备份
                 </button>
               </div>
             )}
           </div>
           <p className="backup-footnote">
             <ShieldCheck size={14} />{' '}
-            导入不会覆盖已有卡片。备份文件不会上传到服务器。
+            只有明确选择“恢复备份版本”才会替换现有内容。备份文件不会上传到服务器。
           </p>
+        </Dialog>
+      )}
+      {modal === 'history' && selected && (
+        <Dialog
+          wide
+          title="历史版本"
+          description="保存前的内容会保留最近 20 个版本。恢复后，当前版本也会进入历史记录。"
+          onClose={() => setModal(null)}
+        >
+          <div className="recovery-list">
+            {historyEntries.length ? (
+              historyEntries.map((entry) => (
+                <div className="recovery-item" key={entry.id}>
+                  <div>
+                    <strong>{entry.card.title || '未命名卡片'}</strong>
+                    <small>
+                      版本 {entry.card.revision} · 记录于{' '}
+                      {dateTime(entry.recordedAt)}
+                    </small>
+                  </div>
+                  <div className="recovery-actions">
+                    <button
+                      className="secondary-button"
+                      onClick={() =>
+                        setHistoryPreviewId(
+                          historyPreviewId === entry.id ? null : entry.id,
+                        )
+                      }
+                    >
+                      {historyPreviewId === entry.id ? '收起' : '查看内容'}
+                    </button>
+                    <button
+                      className="primary-button"
+                      disabled={busy}
+                      onClick={async () => {
+                        setBusy(true)
+                        try {
+                          await restoreVersion(
+                            selected.id,
+                            entry.id,
+                            selected.revision,
+                          )
+                          await discard()
+                          setModal(null)
+                          setNotice(
+                            '已恢复所选历史版本；原内容已保留在历史记录中。',
+                          )
+                        } catch (cause) {
+                          setNotice(errorText(cause))
+                        } finally {
+                          setBusy(false)
+                        }
+                      }}
+                    >
+                      恢复此版本
+                    </button>
+                  </div>
+                  {historyPreviewId === entry.id && (
+                    <pre className="recovery-preview">
+                      {cardContents(entry.card)}
+                    </pre>
+                  )}
+                </div>
+              ))
+            ) : (
+              <p className="nav-empty">
+                这张卡片还没有历史版本。保存修改后会自动记录。
+              </p>
+            )}
+          </div>
+        </Dialog>
+      )}
+      {modal === 'trash' && (
+        <Dialog
+          title="回收站"
+          description="删除的卡片会留在当前浏览器，恢复后重新出现在知识库。"
+          onClose={() => setModal(null)}
+        >
+          <div className="recovery-list">
+            {deletedEntries.length ? (
+              deletedEntries.map((entry) => (
+                <div className="recovery-item" key={entry.id}>
+                  <div>
+                    <strong>{entry.card.title || '未命名卡片'}</strong>
+                    <small>
+                      删除于 {dateTime(entry.deletedAt)} ·{' '}
+                      {entry.card.tags.join('、') || '无标签'}
+                    </small>
+                  </div>
+                  <div className="recovery-actions">
+                    <button
+                      className="primary-button"
+                      disabled={busy}
+                      onClick={async () => {
+                        setBusy(true)
+                        try {
+                          const restored = await restoreDeletedCard(entry.id)
+                          await discard()
+                          setDeleted(null)
+                          setSelectedId(restored.id)
+                          setMobileDetail(true)
+                          setModal(null)
+                          setNotice('卡片已从回收站恢复。')
+                        } catch (cause) {
+                          setNotice(errorText(cause))
+                        } finally {
+                          setBusy(false)
+                        }
+                      }}
+                    >
+                      恢复卡片
+                    </button>
+                    <button
+                      className="secondary-button"
+                      onClick={() => {
+                        setPendingPurge(entry)
+                        setModal('purge')
+                      }}
+                    >
+                      永久删除
+                    </button>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <p className="nav-empty">回收站是空的。</p>
+            )}
+          </div>
+        </Dialog>
+      )}
+      {modal === 'purge' && pendingPurge && (
+        <Dialog
+          title="永久删除这张卡片？"
+          description={`「${pendingPurge.card.title || '未命名卡片'}」及其历史版本会从当前浏览器移除，只能从之前导出的备份恢复。`}
+          onClose={() => setModal('trash')}
+        >
+          <div className="dialog-actions">
+            <button
+              className="secondary-button"
+              onClick={() => setModal('trash')}
+            >
+              取消
+            </button>
+            <button
+              className="danger-button"
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true)
+                try {
+                  await purgeDeletedCard(pendingPurge.id)
+                  setDeletedEntries(await listTrash())
+                  setDeleted(null)
+                  setPendingPurge(null)
+                  setModal('trash')
+                  setNotice('卡片已永久删除。')
+                } catch (cause) {
+                  setNotice(errorText(cause))
+                } finally {
+                  setBusy(false)
+                }
+              }}
+            >
+              永久删除
+            </button>
+          </div>
         </Dialog>
       )}
       {modal === 'help' && (

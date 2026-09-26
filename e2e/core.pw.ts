@@ -114,11 +114,92 @@ test('JSON backup restores complete card and rejects invalid file', async ({
     buffer: await readFile(await download.path()),
   })
   await expect(page.getByText(/校验通过，共 4 张卡片，3 张 ID/)).toBeVisible()
-  await page.getByRole('button', { name: '确认导入 4 张卡片' }).click()
+  await page.getByRole('button', { name: '确认导入备份' }).click()
   await page.getByRole('textbox', { name: '搜索知识卡片' }).fill('marker-739')
   await expect(
     page.getByRole('option').filter({ hasText: '备份往返 E2E' }),
   ).toHaveCount(1)
+})
+
+test('history, recycle bin and selective backup restore recover previous content', async ({
+  page,
+  isMobile,
+}) => {
+  test.skip(isMobile, 'Desktop recovery workflow')
+  await page.goto('/')
+  await page.getByRole('button', { name: '新建知识卡片' }).click()
+  await page.getByRole('textbox', { name: '卡片标题' }).fill('恢复流程 E2E')
+  await page
+    .getByRole('textbox', { name: 'Markdown 正文' })
+    .fill('最初内容 E2E')
+  await expect(
+    page.getByRole('status').filter({ hasText: '已保存' }),
+  ).toBeVisible()
+
+  await page.getByRole('button', { name: '导入与备份' }).click()
+  const downloadPromise = page.waitForEvent('download')
+  await page.getByRole('button', { name: '导出备份' }).click()
+  const download = await downloadPromise
+  await page.getByRole('button', { name: '关闭弹窗' }).click()
+
+  await page
+    .getByRole('textbox', { name: 'Markdown 正文' })
+    .fill('后来内容 E2E')
+  await expect(
+    page.getByRole('status').filter({ hasText: '已保存' }),
+  ).toBeVisible()
+  await page.getByRole('button', { name: '导入与备份' }).click()
+  await page.getByLabel('选择 JSON 或 ZIP 备份文件').setInputFiles({
+    name: download.suggestedFilename(),
+    mimeType: 'application/json',
+    buffer: await readFile(await download.path()),
+  })
+  await expect(page.getByText(/校验通过，共 4 张卡片/)).toBeVisible()
+  await page.getByRole('button', { name: '对比内容' }).first().click()
+  await expect(page.locator('.restore-comparison')).toContainText(
+    '最初内容 E2E',
+  )
+  await expect(page.locator('.restore-comparison')).toContainText(
+    '后来内容 E2E',
+  )
+  await page
+    .getByRole('combobox', { name: '处理 恢复流程 E2E 的备份冲突' })
+    .selectOption('replace')
+  await page.getByRole('button', { name: '确认导入备份' }).click()
+  await expect(
+    page.getByRole('textbox', { name: 'Markdown 正文' }),
+  ).toContainText('最初内容 E2E')
+
+  await page.getByRole('button', { name: '查看卡片历史版本' }).click()
+  await page.getByRole('button', { name: '查看内容' }).first().click()
+  await expect(page.getByRole('dialog')).toContainText('后来内容 E2E')
+  await page.getByRole('button', { name: '关闭弹窗' }).click()
+  await page.getByRole('button', { name: '删除当前卡片' }).click()
+  await page.getByRole('button', { name: '确认删除' }).click()
+  await expect(
+    page.getByRole('option').filter({ hasText: '恢复流程 E2E' }),
+  ).toHaveCount(0)
+  await page.reload()
+  await page.getByRole('button', { name: '回收站' }).click()
+  await expect(page.getByRole('dialog')).toContainText('恢复流程 E2E')
+  await page.getByRole('button', { name: '恢复卡片' }).click()
+  await expect(
+    page.getByRole('option').filter({ hasText: '恢复流程 E2E' }),
+  ).toHaveCount(1)
+  await page.getByRole('button', { name: '删除当前卡片' }).click()
+  await page.getByRole('button', { name: '确认删除' }).click()
+  await expect(
+    page.getByRole('option').filter({ hasText: '恢复流程 E2E' }),
+  ).toHaveCount(0)
+  await page.getByRole('button', { name: '回收站' }).click()
+  await page.getByRole('button', { name: '永久删除', exact: true }).click()
+  await page
+    .getByRole('dialog', { name: '永久删除这张卡片？' })
+    .getByRole('button', { name: '永久删除' })
+    .click()
+  await expect(page.getByRole('dialog', { name: '回收站' })).toContainText(
+    '回收站是空的',
+  )
 })
 
 test('concurrent tabs report a conflict and preserve a copy', async ({

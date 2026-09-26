@@ -26,3 +26,26 @@ export interface ImportResult {
   added: number
   skipped: number
 }
+
+export interface CardHistoryEntry {
+  id: string
+  cardId: string
+  card: Card
+  recordedAt: string
+}
+
+export interface DeletedCard {
+  id: string
+  card: Card
+  deletedAt: string
+}
+
+export type RestoreChoice = 'skip' | 'copy' | 'replace'
+export interface RestoreDecision {
+  choice: RestoreChoice
+  expectedRevision: number
+}
+
+export interface RestoreResult extends ImportResult {
+  replaced: number
+}
