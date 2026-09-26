@@ -41,6 +41,7 @@ import {
   createCard,
   deleteCard,
   demoMode,
+  importCards,
   listHistory,
   listTrash,
   purgeDeletedCard,
@@ -51,6 +52,7 @@ import {
   restoreVersion,
 } from './lib/db'
 import { createBackupFile, parseBackupFile, validateSource } from './lib/backup'
+import { makeKnowledgePackCards } from './lib/knowledgePack'
 import { searchCards } from './lib/search'
 import { useKnowledge } from './lib/useKnowledge'
 import { useRegisterSW } from 'virtual:pwa-register/react'
@@ -212,6 +214,7 @@ export default function App() {
     | 'history'
     | 'trash'
     | 'purge'
+    | 'knowledge-pack'
     | null
   >(null)
   const [imported, setImported] = useState<Card[] | null>(null)
@@ -234,6 +237,7 @@ export default function App() {
   const [deleted, setDeleted] = useState<Card | null>(null)
   const [cursor, setCursor] = useState(0)
   const [visibleCount, setVisibleCount] = useState(100)
+  const knowledgePack = useMemo(() => makeKnowledgePackCards(), [])
   const searchRef = useRef<HTMLInputElement>(null)
   const titleRef = useRef<HTMLInputElement>(null)
   const results = useMemo(
@@ -255,6 +259,9 @@ export default function App() {
   )
   const importConflicts =
     imported?.filter((card) => Object.hasOwn(importExisting, card.id)) ?? []
+  const knowledgePackMissing = knowledgePack.filter(
+    (card) => !cards.some((existing) => existing.id === card.id),
+  )
 
   useEffect(() => {
     if (!loading && !selectedId && cards.length)
@@ -309,6 +316,40 @@ export default function App() {
         titleRef.current?.focus()
         titleRef.current?.select()
       }, 80)
+    } catch (cause) {
+      setNotice(errorText(cause))
+    } finally {
+      setBusy(false)
+    }
+  }
+  const addKnowledgePack = async () => {
+    if (!(await flush())) {
+      setNotice('当前修改尚未保存，请先解决保存问题再添加知识卡片。')
+      return
+    }
+    setBusy(true)
+    try {
+      const firstMissing = knowledgePack.find(
+        (card) => !cardsRef.current.some((existing) => existing.id === card.id),
+      )
+      const result = await importCards(makeKnowledgePackCards(), 'skip')
+      setModal(null)
+      setSidebarOpen(false)
+      setDeleted(null)
+      setQuery('')
+      setTag(null)
+      setCollection('all')
+      if (firstMissing && result.added) {
+        setSelectedId(firstMissing.id)
+        setTab('note')
+        setEditing(false)
+        setMobileDetail(true)
+      }
+      setNotice(
+        result.added
+          ? `已加入 ${result.added} 张知识卡片；已有 ${result.skipped} 张保持原样。`
+          : '知识包已全部加入，现有卡片和修改保持原样。',
+      )
     } catch (cause) {
       setNotice(errorText(cause))
     } finally {
@@ -514,6 +555,18 @@ export default function App() {
           </span>
           <strong>踩坑记录模板</strong>
           <span>现象 → 原因 → 解决方法</span>
+          <ArrowRight className="template-arrow" size={16} />
+        </button>
+        <button
+          className="template-card knowledge-pack-card"
+          onClick={() => setModal('knowledge-pack')}
+          disabled={busy || loading}
+        >
+          <span className="template-icon">
+            <BookOpen size={16} />
+          </span>
+          <strong>前端知识内容包</strong>
+          <span>{knowledgePackMissing.length} 张可添加 · 附运行示例</span>
           <ArrowRight className="template-arrow" size={16} />
         </button>
         <div className="sidebar-bottom">
@@ -1208,6 +1261,43 @@ export default function App() {
               }}
             >
               确认重置演示空间
+            </button>
+          </div>
+        </Dialog>
+      )}
+      {modal === 'knowledge-pack' && (
+        <Dialog
+          title="前端知识内容包"
+          description={`包含 ${knowledgePack.length} 张专题笔记，每张都有可运行示例和参考来源。只添加当前工作区缺少的卡片，已有卡片及其修改会保留。`}
+          onClose={() => setModal(null)}
+        >
+          <ul className="knowledge-pack-list">
+            {knowledgePack.map((card) => (
+              <li key={card.id}>
+                <span>{card.title}</span>
+                <small>
+                  {cards.some((existing) => existing.id === card.id)
+                    ? '已在工作区'
+                    : card.tags.join(' · ')}
+                </small>
+              </li>
+            ))}
+          </ul>
+          <p className="knowledge-pack-note">
+            添加是主动操作：如果以前删除过包内卡片，再次添加会把它重新加入。
+          </p>
+          <div className="dialog-actions">
+            <button className="secondary-button" onClick={() => setModal(null)}>
+              取消
+            </button>
+            <button
+              className="primary-button"
+              onClick={() => void addKnowledgePack()}
+              disabled={busy || !knowledgePackMissing.length}
+            >
+              {knowledgePackMissing.length
+                ? `添加 ${knowledgePackMissing.length} 张知识卡片`
+                : '已全部加入'}
             </button>
           </div>
         </Dialog>
