@@ -41,22 +41,24 @@ import {
   createCard,
   deleteCard,
   demoMode,
+  exportWorkspace,
+  getWorkspaceMarker,
   importCards,
   listHistory,
   listTrash,
   purgeDeletedCard,
   resetDemoCards,
+  replaceWorkspace,
   restoreBackupCards,
   restoreCard,
   restoreDeletedCard,
   restoreVersion,
 } from './lib/db'
+import { createDraftFile, validateSource } from './lib/backup'
 import {
-  createBackupFile,
-  createDraftFile,
-  parseBackupFile,
-  validateSource,
-} from './lib/backup'
+  createWorkspaceBackupFile,
+  readPortableBackupFile,
+} from './lib/workspaceBackup'
 import { makeKnowledgePackCards } from './lib/knowledgePack'
 import { searchCards } from './lib/search'
 import { useKnowledge } from './lib/useKnowledge'
@@ -67,6 +69,7 @@ import type {
   DeletedCard,
   RestoreChoice,
   RestoreDecision,
+  WorkspaceData,
 } from './lib/types'
 import { CodeLab } from './components/CodeLab'
 import { SourceEditor } from './components/LazySourceEditor'
@@ -235,9 +238,12 @@ export default function App() {
     | 'trash'
     | 'purge'
     | 'knowledge-pack'
+    | 'replace-workspace'
     | null
   >(null)
   const [imported, setImported] = useState<Card[] | null>(null)
+  const [fullBackup, setFullBackup] = useState<WorkspaceData | null>(null)
+  const [importBaseline, setImportBaseline] = useState<string | null>(null)
   const [importName, setImportName] = useState('')
   const [importError, setImportError] = useState('')
   const [importExisting, setImportExisting] = useState<Record<string, Card>>(
@@ -419,7 +425,9 @@ export default function App() {
       let backup: { data: Blob; extension: string }
       let draft = false
       try {
-        backup = await createBackupFile(snapshot)
+        const workspace = await exportWorkspace()
+        workspace.cards = snapshot
+        backup = await createWorkspaceBackupFile(workspace)
       } catch (cause) {
         if (saved) throw cause
         backup = { data: createDraftFile(snapshot), extension: 'draft.json' }
@@ -444,8 +452,8 @@ export default function App() {
         draft
           ? '已导出未校验草稿，保留全部原始内容。请修正文件中的无效字段或超限内容后再导入；浏览器内的修改仍未保存。'
           : saved
-            ? `已导出 ${snapshot.length} 张卡片，包含全部源码。`
-            : '已导出当前内存中的内容；浏览器内的修改仍未保存。',
+            ? `已导出 ${snapshot.length} 张卡片，以及历史版本和回收站。`
+            : '已导出当前内存中的卡片、历史版本和回收站；浏览器内的修改仍未保存。',
       )
     } catch (cause) {
       setNotice(errorText(cause))
@@ -480,6 +488,34 @@ export default function App() {
       setTag(null)
     } catch (cause) {
       setImportError(errorText(cause))
+    } finally {
+      backupInFlight.current = false
+      setBusy(false)
+    }
+  }
+  const performFullRestore = async () => {
+    if (!fullBackup || !importBaseline || busy || backupInFlight.current) return
+    backupInFlight.current = true
+    setBusy(true)
+    setImportError('')
+    try {
+      if (!(await flush()))
+        throw new Error('当前修改尚未保存，请先解决保存问题。')
+      await replaceWorkspace(fullBackup, importBaseline)
+      await discard()
+      setSelectedId(fullBackup.cards[0]?.id ?? null)
+      setDeleted(null)
+      setModal(null)
+      setFullBackup(null)
+      setImported(null)
+      setQuery('')
+      setTag(null)
+      setNotice(
+        `完整恢复完成：${fullBackup.cards.length} 张卡片、${fullBackup.history.length} 条历史、${fullBackup.trash.length} 张回收站卡片。`,
+      )
+    } catch (cause) {
+      setImportError(errorText(cause))
+      setModal('backup')
     } finally {
       backupInFlight.current = false
       setBusy(false)
@@ -659,6 +695,8 @@ export default function App() {
               setModal('backup')
               setImportError('')
               setImported(null)
+              setFullBackup(null)
+              setImportBaseline(null)
               setImportName('')
               setImportExisting(Object.create(null))
               setImportChoices({})
@@ -1399,7 +1437,7 @@ export default function App() {
             </span>
             <div>
               <strong>导出知识库</strong>
-              <p>{cards.length} 张卡片 · 正文、标签与全部源码</p>
+              <p>{cards.length} 张卡片 · 正文、源码、历史与回收站</p>
             </div>
             <button
               className="secondary-button"
@@ -1472,6 +1510,8 @@ export default function App() {
                   if (!file || busy || backupInFlight.current) return
                   backupInFlight.current = true
                   setImported(null)
+                  setFullBackup(null)
+                  setImportBaseline(null)
                   setImportExisting(Object.create(null))
                   setImportChoices({})
                   setBackupPreviewId(null)
@@ -1480,7 +1520,7 @@ export default function App() {
                   setImportError('')
                   setBusy(true)
                   try {
-                    const parsed = await parseBackupFile(file)
+                    const parsed = await readPortableBackupFile(file)
                     if (!(await flush()))
                       throw new Error(
                         '当前修改尚未保存，请先解决保存问题后再导入。',
@@ -1489,12 +1529,17 @@ export default function App() {
                       cardsRef.current.map((card) => [card.id, card]),
                     )
                     const existing: Record<string, Card> = Object.create(null)
-                    for (const card of parsed) {
+                    for (const card of parsed.workspace.cards) {
                       const current = byId.get(card.id)
                       if (current) existing[card.id] = current
                     }
+                    const baseline = parsed.complete
+                      ? await getWorkspaceMarker()
+                      : null
                     setImportExisting(existing)
-                    setImported(parsed)
+                    setImported(parsed.workspace.cards)
+                    setFullBackup(parsed.complete ? parsed.workspace : null)
+                    setImportBaseline(baseline)
                   } catch (cause) {
                     setImportError(errorText(cause))
                   } finally {
@@ -1517,6 +1562,24 @@ export default function App() {
                   校验通过，共 {imported.length} 张卡片，
                   {importConflicts.length} 张 ID 与现有卡片相同。
                 </p>
+                {fullBackup && (
+                  <div className="full-backup-choice">
+                    <strong>
+                      此备份还包含 {fullBackup.history.length} 条历史版本、
+                      {fullBackup.trash.length} 张回收站卡片
+                    </strong>
+                    <p>
+                      下方“仅导入卡片”沿用逐张冲突选择，不恢复历史和回收站。要连同这些数据一起恢复，请使用完整恢复；它会替换当前工作区的全部数据。
+                    </p>
+                    <button
+                      className="secondary-button"
+                      disabled={busy}
+                      onClick={() => setModal('replace-workspace')}
+                    >
+                      恢复完整工作区
+                    </button>
+                  </div>
+                )}
                 {importConflicts.length > 0 && (
                   <div className="restore-conflicts">
                     <strong>逐张决定如何处理相同 ID 的卡片</strong>
@@ -1601,15 +1664,43 @@ export default function App() {
                   onClick={() => void performImport()}
                 >
                   <Upload size={15} />
-                  确认导入备份
+                  {fullBackup ? '仅导入卡片' : '确认导入备份'}
                 </button>
               </div>
             )}
           </div>
           <p className="backup-footnote">
             <ShieldCheck size={14} />{' '}
-            只有明确选择“恢复备份版本”才会替换现有内容。备份文件不会上传到服务器。
+            逐张导入仅替换你明确选择的卡片；完整恢复需再次确认。备份文件不会上传到服务器。
           </p>
+        </Dialog>
+      )}
+      {modal === 'replace-workspace' && fullBackup && (
+        <Dialog
+          title="恢复完整工作区？"
+          description={`备份包含 ${fullBackup.cards.length} 张卡片、${fullBackup.history.length} 条历史版本和 ${fullBackup.trash.length} 张回收站卡片。当前工作区的卡片、历史和回收站都会被替换。`}
+          onClose={() => {
+            if (!busy) setModal('backup')
+          }}
+        >
+          <p className="dialog-description">
+            如需保留当前数据，请先取消并导出当前工作区。恢复期间若其他页面修改了本地数据，操作会停止。
+          </p>
+          <div className="dialog-actions">
+            <button
+              className="secondary-button"
+              onClick={() => setModal('backup')}
+            >
+              取消
+            </button>
+            <button
+              className="primary-button"
+              disabled={busy}
+              onClick={() => void performFullRestore()}
+            >
+              确认替换并完整恢复
+            </button>
+          </div>
         </Dialog>
       )}
       {modal === 'history' && selected && (

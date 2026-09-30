@@ -40,6 +40,12 @@ export interface DeletedCard {
   deletedAt: string
 }
 
+export interface WorkspaceData {
+  cards: Card[]
+  history: CardHistoryEntry[]
+  trash: DeletedCard[]
+}
+
 export type RestoreChoice = 'skip' | 'copy' | 'replace'
 export interface RestoreDecision {
   choice: RestoreChoice

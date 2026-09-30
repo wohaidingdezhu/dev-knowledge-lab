@@ -1,5 +1,6 @@
 import Dexie, { type Table } from 'dexie'
 import { validateCards } from './backup'
+import { validateWorkspace } from './workspaceBackup'
 import { makeSeedCards, PITFALL_TEMPLATE } from './seeds'
 import type {
   Card,
@@ -9,6 +10,7 @@ import type {
   ImportStrategy,
   RestoreDecision,
   RestoreResult,
+  WorkspaceData,
 } from './types'
 
 const HISTORY_LIMIT = 20
@@ -44,6 +46,19 @@ interface Metadata {
   key: string
   value: string
 }
+
+const workspaceMarker = ({ cards, history, trash }: WorkspaceData) =>
+  JSON.stringify({
+    cards: cards
+      .map(({ id, revision, updatedAt }) => [id, revision, updatedAt])
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+    history: history
+      .map(({ id, cardId, recordedAt }) => [id, cardId, recordedAt])
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+    trash: trash
+      .map(({ id, deletedAt, card }) => [id, deletedAt, card.revision])
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+  })
 
 export class ConflictError extends Error {
   readonly latest: Card | null
@@ -128,6 +143,58 @@ export class KnowledgeDB extends Dexie {
 
   async listTrash(): Promise<DeletedCard[]> {
     return this.trash.orderBy('deletedAt').reverse().toArray()
+  }
+
+  async exportWorkspace(): Promise<WorkspaceData> {
+    return this.transaction(
+      'r',
+      this.cards,
+      this.history,
+      this.trash,
+      async () => ({
+        cards: await this.cards.toArray(),
+        history: await this.history.toArray(),
+        trash: await this.trash.toArray(),
+      }),
+    )
+  }
+
+  async workspaceMarker(): Promise<string> {
+    return workspaceMarker(await this.exportWorkspace())
+  }
+
+  async replaceWorkspace(
+    data: WorkspaceData,
+    expectedMarker: string,
+  ): Promise<void> {
+    const incoming = validateWorkspace(data)
+    await this.transaction(
+      'rw',
+      this.cards,
+      this.history,
+      this.trash,
+      this.metadata,
+      async () => {
+        const current: WorkspaceData = {
+          cards: await this.cards.toArray(),
+          history: await this.history.toArray(),
+          trash: await this.trash.toArray(),
+        }
+        if (workspaceMarker(current) !== expectedMarker)
+          throw new Error('本地数据已在其他页面变化，请重新选择备份文件。')
+        await this.cards.clear()
+        await this.history.clear()
+        await this.trash.clear()
+        if (incoming.cards.length) await this.cards.bulkAdd(incoming.cards)
+        if (incoming.history.length)
+          await this.history.bulkAdd(incoming.history)
+        if (incoming.trash.length) await this.trash.bulkAdd(incoming.trash)
+        await this.metadata.put({
+          key: 'initialized',
+          value: new Date().toISOString(),
+        })
+      },
+    )
   }
 
   async loadCards(): Promise<Card[]> {
@@ -436,6 +503,10 @@ export const restoreDeletedCard = (id: string) => db.restoreDeletedCard(id)
 export const purgeDeletedCard = (id: string) => db.purgeDeletedCard(id)
 export const listTrash = () => db.listTrash()
 export const listHistory = (cardId: string) => db.listHistory(cardId)
+export const exportWorkspace = () => db.exportWorkspace()
+export const getWorkspaceMarker = () => db.workspaceMarker()
+export const replaceWorkspace = (data: WorkspaceData, marker: string) =>
+  db.replaceWorkspace(data, marker)
 export const restoreVersion = (
   cardId: string,
   historyId: string,

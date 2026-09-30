@@ -114,7 +114,7 @@ test('JSON backup restores complete card and rejects invalid file', async ({
     buffer: await readFile(await download.path()),
   })
   await expect(page.getByText(/校验通过，共 4 张卡片，3 张 ID/)).toBeVisible()
-  await page.getByRole('button', { name: '确认导入备份' }).click()
+  await page.getByRole('button', { name: '仅导入卡片' }).click()
   await page.getByRole('textbox', { name: '搜索知识卡片' }).fill('marker-739')
   await expect(
     page.getByRole('option').filter({ hasText: '备份往返 E2E' }),
@@ -165,7 +165,7 @@ test('history, recycle bin and selective backup restore recover previous content
   await page
     .getByRole('combobox', { name: '处理 恢复流程 E2E 的备份冲突' })
     .selectOption('replace')
-  await page.getByRole('button', { name: '确认导入备份' }).click()
+  await page.getByRole('button', { name: '仅导入卡片' }).click()
   await expect(
     page.getByRole('textbox', { name: 'Markdown 正文' }),
   ).toContainText('最初内容 E2E')
@@ -199,6 +199,90 @@ test('history, recycle bin and selective backup restore recover previous content
     .click()
   await expect(page.getByRole('dialog', { name: '回收站' })).toContainText(
     '回收站是空的',
+  )
+})
+
+test('complete backup restores history and recycle bin together', async ({
+  page,
+  isMobile,
+}) => {
+  test.skip(isMobile, 'Desktop complete recovery workflow')
+  await page.goto('/')
+  await page.getByRole('button', { name: '新建知识卡片' }).click()
+  await page.getByRole('textbox', { name: '卡片标题' }).fill('完整备份历史')
+  await page.getByRole('textbox', { name: 'Markdown 正文' }).fill('第一版内容')
+  await expect(page.locator('.save-status')).toHaveText('已保存')
+  await page.getByRole('textbox', { name: 'Markdown 正文' }).fill('第二版内容')
+  await expect(page.locator('.save-status')).toHaveText('已保存')
+
+  await page.getByRole('button', { name: '新建知识卡片' }).click()
+  await page.getByRole('textbox', { name: '卡片标题' }).fill('完整备份回收站')
+  await expect(page.locator('.save-status')).toHaveText('已保存')
+  await page.getByRole('button', { name: '删除当前卡片' }).click()
+  await page.getByRole('button', { name: '确认删除' }).click()
+
+  await page.getByRole('button', { name: '导入与备份' }).click()
+  const downloadPromise = page.waitForEvent('download')
+  await page.getByRole('button', { name: '导出备份' }).click()
+  const download = await downloadPromise
+  const buffer = await readFile(await download.path())
+  const exported = JSON.parse(buffer.toString('utf8'))
+  expect(exported.schemaVersion).toBe(3)
+  expect(exported.history.length).toBeGreaterThan(0)
+  const activeId = exported.cards.find(
+    (card: { title: string }) => card.title === '完整备份历史',
+  ).id
+  const activeHistoryCount = exported.history.filter(
+    (entry: { cardId: string }) => entry.cardId === activeId,
+  ).length
+  expect(activeHistoryCount).toBeGreaterThan(0)
+  expect(
+    exported.trash.some(
+      (entry: { card: { title: string } }) =>
+        entry.card.title === '完整备份回收站',
+    ),
+  ).toBe(true)
+  await page.getByRole('button', { name: '关闭弹窗' }).click()
+
+  await page.getByRole('option').filter({ hasText: '完整备份历史' }).click()
+  await page.getByRole('button', { name: '编辑', exact: true }).click()
+  await page.getByRole('textbox', { name: 'Markdown 正文' }).fill('备份后修改')
+  await expect(page.locator('.save-status')).toHaveText('已保存')
+  await page.getByRole('button', { name: '回收站' }).click()
+  await page.getByRole('button', { name: '永久删除', exact: true }).click()
+  await page
+    .getByRole('dialog', { name: '永久删除这张卡片？' })
+    .getByRole('button', { name: '永久删除' })
+    .click()
+  await page.getByRole('button', { name: '关闭弹窗' }).click()
+
+  await page.getByRole('button', { name: '导入与备份' }).click()
+  await page.getByLabel('选择 JSON 或 ZIP 备份文件').setInputFiles({
+    name: download.suggestedFilename(),
+    mimeType: 'application/json',
+    buffer,
+  })
+  await expect(
+    page.getByRole('button', { name: '恢复完整工作区' }),
+  ).toBeVisible()
+  await page.getByRole('button', { name: '恢复完整工作区' }).click()
+  await expect(
+    page.getByRole('dialog', { name: '恢复完整工作区？' }),
+  ).toContainText('当前工作区的卡片、历史和回收站都会被替换')
+  await page.getByRole('button', { name: '确认替换并完整恢复' }).click()
+  await page.getByRole('option').filter({ hasText: '完整备份历史' }).click()
+  await page.getByRole('button', { name: '编辑', exact: true }).click()
+  await expect(
+    page.getByRole('textbox', { name: 'Markdown 正文' }),
+  ).toContainText('第二版内容')
+  await page.getByRole('button', { name: '查看卡片历史版本' }).click()
+  await expect(page.getByRole('button', { name: '恢复此版本' })).toHaveCount(
+    activeHistoryCount,
+  )
+  await page.getByRole('button', { name: '关闭弹窗' }).click()
+  await page.getByRole('button', { name: '回收站' }).click()
+  await expect(page.getByRole('dialog', { name: '回收站' })).toContainText(
+    '完整备份回收站',
   )
 })
 
