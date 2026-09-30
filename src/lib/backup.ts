@@ -430,8 +430,26 @@ export async function createBackupFile(
   }
 }
 
+/** Emergency copy only: preserve invalid drafts without weakening backup import. */
+export function createDraftFile(cards: Card[]): Blob {
+  return new Blob(
+    [
+      JSON.stringify(
+        { schemaVersion, exportedAt: new Date().toISOString(), cards },
+        null,
+        2,
+      ),
+    ],
+    { type: 'application/json' },
+  )
+}
+
 export async function parseBackupFile(file: File): Promise<Card[]> {
-  if (/\.json$/i.test(file.name)) return parseBackup(await file.text())
+  if (/\.json$/i.test(file.name)) {
+    if (file.size > BACKUP_LIMITS.bytes)
+      throw new Error('备份文件不能超过 10 MiB。')
+    return parseBackup(await file.text())
+  }
   if (!/\.zip$/i.test(file.name))
     throw new Error('请选择 .json 或 .zip 备份文件。')
   if (file.size > BACKUP_LIMITS.archiveBytes)

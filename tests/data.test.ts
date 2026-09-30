@@ -13,6 +13,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   vi.restoreAllMocks()
+  vi.useRealTimers()
   await database.delete()
 })
 
@@ -191,9 +192,12 @@ describe('local persistence', () => {
   })
 
   it('keeps bounded history and can restore an older version without losing the current one', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
     let current = await database.createCard()
-    for (let index = 1; index <= 22; index++)
+    for (let index = 1; index <= 22; index++) {
+      vi.setSystemTime(Date.now() + 11 * 60 * 1000)
       current = await database.saveCard({ ...current, body: `第 ${index} 版` })
+    }
     const history = await database.listHistory(current.id)
     expect(history).toHaveLength(20)
     expect(history[0].card.body).toBe('第 21 版')
@@ -211,6 +215,37 @@ describe('local persistence', () => {
     await expect(
       database.restoreVersion(current.id, history[0].id, current.revision),
     ).rejects.toBeInstanceOf(ConflictError)
+  })
+
+  it('keeps one snapshot during rapid autosaves and adds one after a long edit or pause', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    let current = await database.createCard()
+    for (let index = 1; index <= 3; index++) {
+      vi.setSystemTime(Date.now() + 30_000)
+      current = await database.saveCard({
+        ...current,
+        body: `连续修改 ${index}`,
+      })
+    }
+    expect(
+      (await database.listHistory(current.id)).map((entry) => entry.card.body),
+    ).toEqual([''])
+
+    vi.setSystemTime(Date.now() + 10 * 60 * 1000)
+    current = await database.saveCard({ ...current, body: '长时间编辑后' })
+    expect(
+      (await database.listHistory(current.id)).map((entry) => entry.card.body),
+    ).toEqual(['连续修改 3', ''])
+
+    vi.setSystemTime(Date.now() + 6 * 60 * 1000)
+    current = await database.saveCard({ ...current, body: '暂停后继续' })
+    expect(
+      (await database.listHistory(current.id)).map((entry) => entry.card.body),
+    ).toEqual(['长时间编辑后', '连续修改 3', ''])
+    await database.deleteCard(current)
+    expect((await database.listHistory(current.id))[0].card.body).toBe(
+      '暂停后继续',
+    )
   })
 
   it('keeps deleted cards in the recycle bin across reopening and restores them once', async () => {

@@ -1,7 +1,10 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   BACKUP_LIMITS,
+  createBackupFile,
+  createDraftFile,
   parseBackup,
+  parseBackupFile,
   serializeBackup,
   validateSource,
 } from '../src/lib/backup'
@@ -11,6 +14,40 @@ const cards = makeSeedCards('2026-09-25T00:00:00.000Z')
 const backup = () => JSON.parse(serializeBackup(cards))
 
 describe('versioned backups', () => {
+  it('preserves invalid draft fields while requiring correction before import', async () => {
+    const drafts = structuredClone(cards)
+    drafts[0].source = 'developer.mozilla.org'
+    drafts[0].body = '尚未保存的正文'
+    drafts[0].js = 'console.log("尚未保存的代码")'
+    await expect(createBackupFile(drafts)).rejects.toThrow(/来源链接/)
+    const text = await createDraftFile(drafts).text()
+    const recovered = JSON.parse(text)
+    expect(recovered.cards).toEqual(drafts)
+    expect(() => parseBackup(text)).toThrow(/来源链接/)
+    recovered.cards[0].source = 'https://developer.mozilla.org'
+    expect(parseBackup(JSON.stringify(recovered))).toEqual(
+      drafts.map((card, index) =>
+        index === 0
+          ? { ...card, source: 'https://developer.mozilla.org' }
+          : card,
+      ),
+    )
+  })
+
+  it.each([
+    ['json', BACKUP_LIMITS.bytes, 'text', /10 MiB/],
+    ['zip', BACKUP_LIMITS.archiveBytes, 'arrayBuffer', /100 MiB/],
+  ] as const)(
+    'rejects oversized %s files before reading their contents',
+    async (extension, limit, method, message) => {
+      const file = new File([''], `backup.${extension}`)
+      Object.defineProperty(file, 'size', { value: limit + 1 })
+      const read = vi.spyOn(file, method)
+      await expect(parseBackupFile(file)).rejects.toThrow(message)
+      expect(read).not.toHaveBeenCalled()
+    },
+  )
+
   it('round-trips all content, IDs, tags, timestamps, code and revisions', () => {
     expect(parseBackup(serializeBackup(cards))).toEqual(cards)
     expect(JSON.parse(serializeBackup(cards)).schemaVersion).toBe(1)

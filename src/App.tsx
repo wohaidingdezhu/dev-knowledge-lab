@@ -51,7 +51,12 @@ import {
   restoreDeletedCard,
   restoreVersion,
 } from './lib/db'
-import { createBackupFile, parseBackupFile, validateSource } from './lib/backup'
+import {
+  createBackupFile,
+  createDraftFile,
+  parseBackupFile,
+  validateSource,
+} from './lib/backup'
 import { makeKnowledgePackCards } from './lib/knowledgePack'
 import { searchCards } from './lib/search'
 import { useKnowledge } from './lib/useKnowledge'
@@ -77,6 +82,21 @@ const hasCode = (card: Card) =>
 const errorText = (cause: unknown) =>
   cause instanceof Error ? cause.message : '操作失败，请重试。'
 const dateTime = (value: string) => new Date(value).toLocaleString('zh-CN')
+const formatStorageSize = (bytes: number) =>
+  bytes < 1024 * 1024
+    ? `${Math.ceil(bytes / 1024)} KiB`
+    : `${(bytes / (1024 * 1024)).toFixed(1)} MiB`
+const lastBackupKey = demoMode
+  ? 'pianduan-demo-last-backup'
+  : 'pianduan-last-backup'
+const readLastBackup = (): string | null => {
+  try {
+    const value = localStorage.getItem(lastBackupKey)
+    return value && Number.isFinite(Date.parse(value)) ? value : null
+  } catch {
+    return null
+  }
+}
 const cardContents = (card: Card) =>
   `标题：${card.title}\n标签：${card.tags.join('、') || '无'}\n来源：${card.source || '无'}\n\n正文：\n${card.body}\n\nHTML：\n${card.html}\n\nCSS：\n${card.css}\n\nJavaScript：\n${card.js}`
 
@@ -233,6 +253,14 @@ export default function App() {
   const [pendingPurge, setPendingPurge] = useState<DeletedCard | null>(null)
   const [historyPreviewId, setHistoryPreviewId] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const backupInFlight = useRef(false)
+  const [lastBackupAt, setLastBackupAt] = useState(readLastBackup)
+  const [storageEstimate, setStorageEstimate] =
+    useState<StorageEstimate | null>(null)
+  const [persistentStorage, setPersistentStorage] = useState<boolean | null>(
+    null,
+  )
+  const [persistenceMessage, setPersistenceMessage] = useState('')
   const [notice, setNotice] = useState('')
   const [deleted, setDeleted] = useState<Card | null>(null)
   const [cursor, setCursor] = useState(0)
@@ -291,6 +319,31 @@ export default function App() {
       return () => clearTimeout(timer)
     }
   }, [notice])
+  useEffect(() => {
+    if (modal !== 'backup' || !navigator.storage) return
+    let active = true
+    if (navigator.storage.estimate)
+      void navigator.storage
+        .estimate()
+        .then((estimate) => {
+          if (active) setStorageEstimate(estimate)
+        })
+        .catch(() => {
+          if (active) setStorageEstimate(null)
+        })
+    if (navigator.storage.persisted)
+      void navigator.storage
+        .persisted()
+        .then((persisted) => {
+          if (active) setPersistentStorage(persisted)
+        })
+        .catch(() => {
+          if (active) setPersistentStorage(null)
+        })
+    return () => {
+      active = false
+    }
+  }, [modal])
 
   const select = async (card: Card) => {
     if (!(await flush())) return
@@ -357,32 +410,57 @@ export default function App() {
     }
   }
   const exportBackup = async () => {
-    const saved = await flush()
+    if (busy || backupInFlight.current) return
+    backupInFlight.current = true
     setBusy(true)
     try {
-      const backup = await createBackupFile(cardsRef.current)
+      const saved = await flush()
+      const snapshot = structuredClone(cardsRef.current)
+      let backup: { data: Blob; extension: string }
+      let draft = false
+      try {
+        backup = await createBackupFile(snapshot)
+      } catch (cause) {
+        if (saved) throw cause
+        backup = { data: createDraftFile(snapshot), extension: 'draft.json' }
+        draft = true
+      }
       const url = URL.createObjectURL(backup.data)
       const anchor = document.createElement('a')
       anchor.href = url
       anchor.download = `pianduan-backup-${new Date().toISOString().slice(0, 10)}.${backup.extension}`
       anchor.click()
       setTimeout(() => URL.revokeObjectURL(url), 1000)
+      if (!draft) {
+        const exportedAt = new Date().toISOString()
+        setLastBackupAt(exportedAt)
+        try {
+          localStorage.setItem(lastBackupKey, exportedAt)
+        } catch {
+          // Browsers can disable localStorage while still allowing downloads.
+        }
+      }
       setNotice(
-        saved
-          ? `已导出 ${cardsRef.current.length} 张卡片，包含全部源码。`
-          : '已导出当前内存中的内容；浏览器内的修改仍未保存。',
+        draft
+          ? '已导出未校验草稿，保留全部原始内容。请修正文件中的无效字段或超限内容后再导入；浏览器内的修改仍未保存。'
+          : saved
+            ? `已导出 ${snapshot.length} 张卡片，包含全部源码。`
+            : '已导出当前内存中的内容；浏览器内的修改仍未保存。',
       )
     } catch (cause) {
       setNotice(errorText(cause))
     } finally {
+      backupInFlight.current = false
       setBusy(false)
     }
   }
   const performImport = async () => {
-    if (!imported || !(await flush())) return
+    if (!imported || busy || backupInFlight.current) return
+    backupInFlight.current = true
     setBusy(true)
     setImportError('')
     try {
+      if (!(await flush())) return
       const decisions: Record<string, RestoreDecision> = Object.create(null)
       for (const card of importConflicts)
         decisions[card.id] = {
@@ -403,6 +481,7 @@ export default function App() {
     } catch (cause) {
       setImportError(errorText(cause))
     } finally {
+      backupInFlight.current = false
       setBusy(false)
     }
   }
@@ -944,7 +1023,10 @@ export default function App() {
                       <button onClick={() => setModal('discard')}>
                         载入已存版本
                       </button>
-                      <button onClick={() => void exportBackup()}>
+                      <button
+                        disabled={busy}
+                        onClick={() => void exportBackup()}
+                      >
                         导出当前内容
                       </button>
                     </div>
@@ -1322,10 +1404,54 @@ export default function App() {
             <button
               className="secondary-button"
               onClick={() => void exportBackup()}
+              disabled={busy}
             >
               <Download size={14} />
               {busy ? '正在准备…' : '导出备份'}
             </button>
+          </div>
+          <div className="backup-health">
+            <div>
+              <strong>上次发起导出</strong>
+              <span>
+                {lastBackupAt ? dateTime(lastBackupAt) : '尚无记录'}
+                {!lastBackupAt ||
+                Date.now() - Date.parse(lastBackupAt) > 30 * 24 * 60 * 60 * 1000
+                  ? ' · 建议现在导出备份'
+                  : ''}
+              </span>
+            </div>
+            <div>
+              <strong>浏览器存储</strong>
+              <span>
+                {storageEstimate?.usage !== undefined
+                  ? `当前站点约 ${formatStorageSize(storageEstimate.usage)}${storageEstimate.quota !== undefined ? ` / 配额约 ${formatStorageSize(storageEstimate.quota)}` : ''}`
+                  : '浏览器未提供用量信息'}
+                {persistentStorage === true ? ' · 已获持久存储' : ''}
+              </span>
+            </div>
+            {persistentStorage === false && navigator.storage?.persist && (
+              <button
+                className="text-button"
+                onClick={async () => {
+                  try {
+                    const granted = await navigator.storage.persist()
+                    setPersistentStorage(granted)
+                    setPersistenceMessage(
+                      granted
+                        ? '浏览器已授予持久存储。仍请定期导出备份。'
+                        : '浏览器未授予持久存储；请定期导出备份。',
+                    )
+                  } catch {
+                    setPersistenceMessage('暂时无法申请持久存储。')
+                  }
+                }}
+              >
+                申请持久存储
+              </button>
+            )}
+            {persistenceMessage && <p role="status">{persistenceMessage}</p>}
+            <small>导出时间只记录本机发起下载，请确认文件已保存。</small>
           </div>
           <div className="import-section">
             <h3>
@@ -1339,9 +1465,12 @@ export default function App() {
                 aria-label="选择 JSON 或 ZIP 备份文件"
                 type="file"
                 accept=".json,.zip,application/json,application/zip"
+                disabled={busy}
                 onChange={async (event) => {
-                  const file = event.target.files?.[0]
-                  if (!file) return
+                  const input = event.currentTarget
+                  const file = input.files?.[0]
+                  if (!file || busy || backupInFlight.current) return
+                  backupInFlight.current = true
                   setImported(null)
                   setImportExisting(Object.create(null))
                   setImportChoices({})
@@ -1369,9 +1498,10 @@ export default function App() {
                   } catch (cause) {
                     setImportError(errorText(cause))
                   } finally {
+                    input.value = ''
+                    backupInFlight.current = false
                     setBusy(false)
                   }
-                  event.target.value = ''
                 }}
               />
             </label>
@@ -1486,7 +1616,7 @@ export default function App() {
         <Dialog
           wide
           title="历史版本"
-          description="保存前的内容会保留最近 20 个版本。恢复后，当前版本也会进入历史记录。"
+          description="连续编辑会按时间保留快照，最多 20 个；删除或恢复前也会保存当前版本。"
           onClose={() => setModal(null)}
         >
           <div className="recovery-list">

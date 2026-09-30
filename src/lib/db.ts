@@ -12,6 +12,8 @@ import type {
 } from './types'
 
 const HISTORY_LIMIT = 20
+const HISTORY_INTERVAL_MS = 10 * 60 * 1000
+const EDITING_PAUSE_MS = 5 * 60 * 1000
 const nextUpdatedAt = (card: Card) =>
   new Date(
     Math.max(
@@ -90,12 +92,20 @@ export class KnowledgeDB extends Dexie {
     })
   }
 
-  private async remember(card: Card): Promise<void> {
+  private async remember(card: Card, autosave = false): Promise<void> {
     const entries = await this.history
       .where('cardId')
       .equals(card.id)
       .sortBy('recordedAt')
     entries.sort((left, right) => left.card.revision - right.card.revision)
+    const latest = entries.at(-1)
+    if (
+      autosave &&
+      latest &&
+      Date.now() - Date.parse(latest.recordedAt) < HISTORY_INTERVAL_MS &&
+      Date.now() - Date.parse(card.updatedAt) < EDITING_PAUSE_MS
+    )
+      return
     if (entries.length >= HISTORY_LIMIT)
       await this.history.bulkDelete(
         entries
@@ -169,7 +179,7 @@ export class KnowledgeDB extends Dexie {
         updatedAt: nextUpdatedAt(current),
         revision: current.revision + 1,
       }
-      await this.remember(current)
+      await this.remember(current, true)
       await this.cards.put(saved)
       return saved
     })
