@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { liveQuery } from 'dexie'
-import { db, loadCards, saveCard } from './db'
+import { db, loadWorkspace, saveCard } from './db'
 import type { Card } from './types'
 
 export function useKnowledge() {
   const [cards, setCards] = useState<Card[]>([])
   const cardsRef = useRef<Card[]>([])
+  const generationRef = useRef('initial')
   const dirty = useRef(new Map<string, number>())
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -34,7 +35,7 @@ export function useKnowledge() {
           continue
         }
         try {
-          const saved = await saveCard(snapshot)
+          const saved = await saveCard(snapshot, generationRef.current)
           const unchanged = dirty.current.get(id) === generation
           if (unchanged) dirty.current.delete(id)
           replace(
@@ -88,9 +89,10 @@ export function useKnowledge() {
   const discard = useCallback(async () => {
     clearTimeout(timer.current)
     if (inFlight.current) await inFlight.current
-    const latest = await loadCards()
+    const latest = await loadWorkspace()
     dirty.current.clear()
-    replace(latest)
+    generationRef.current = latest.generation
+    replace(latest.cards)
     setError('')
     errorRef.current = ''
     setStatus('saved')
@@ -105,14 +107,18 @@ export function useKnowledge() {
       setStatus('error')
       return
     }
-    void loadCards()
+    void loadWorkspace()
       .then((initial) => {
         if (!active) return
-        replace(initial)
+        generationRef.current = initial.generation
+        replace(initial.cards)
         setLoading(false)
-        subscription = liveQuery(() => db.cards.toArray()).subscribe({
-          next(persisted) {
+        subscription = liveQuery(() => db.readWorkspace()).subscribe({
+          next(workspace) {
             if (!active) return
+            if (!dirty.current.size)
+              generationRef.current = workspace.generation
+            const persisted = workspace.cards
             const merged = persisted.map((card) =>
               dirty.current.has(card.id)
                 ? (cardsRef.current.find((local) => local.id === card.id) ??
@@ -176,5 +182,6 @@ export function useKnowledge() {
     flush,
     discard,
     replace,
+    workspaceGeneration: () => generationRef.current,
   }
 }

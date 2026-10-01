@@ -34,7 +34,11 @@ test('write, autosave, refresh, search, run and undo deletion', async ({
     page.getByRole('status').filter({ hasText: '已保存' }),
   ).toBeVisible()
   await page.reload()
-  await page.getByRole('option').filter({ hasText: 'E2E 自动保存' }).click()
+  await page
+    .getByRole('listbox', { name: '知识卡片搜索结果' })
+    .getByRole('option')
+    .filter({ hasText: 'E2E 自动保存' })
+    .click()
   await expect(page.getByRole('textbox', { name: '卡片标题' })).toHaveValue(
     'E2E 自动保存',
   )
@@ -46,9 +50,13 @@ test('write, autosave, refresh, search, run and undo deletion', async ({
     'https://example.com/docs',
   )
   await page.getByRole('textbox', { name: '搜索知识卡片' }).fill('blue-e2e')
-  await expect(page.getByRole('option')).toHaveCount(1)
+  await expect(
+    page.getByRole('listbox', { name: '知识卡片搜索结果' }).getByRole('option'),
+  ).toHaveCount(1)
   await page.getByRole('textbox', { name: '搜索知识卡片' }).fill('code-e2e')
-  await expect(page.getByRole('option')).toHaveCount(1)
+  await expect(
+    page.getByRole('listbox', { name: '知识卡片搜索结果' }).getByRole('option'),
+  ).toHaveCount(1)
   await page.getByRole('textbox', { name: '搜索知识卡片' }).fill('no-match-e2e')
   await expect(page.getByText('还没找到这个片段')).toBeVisible()
   await page.getByRole('button', { name: '清空搜索' }).click()
@@ -74,11 +82,17 @@ test('write, autosave, refresh, search, run and undo deletion', async ({
   await page.getByRole('button', { name: '删除当前卡片' }).click()
   await page.getByRole('button', { name: '确认删除' }).click()
   await expect(
-    page.getByRole('option').filter({ hasText: 'E2E 自动保存' }),
+    page
+      .getByRole('listbox', { name: '知识卡片搜索结果' })
+      .getByRole('option')
+      .filter({ hasText: 'E2E 自动保存' }),
   ).toHaveCount(0)
   await page.getByRole('button', { name: '撤销删除' }).click()
   await expect(
-    page.getByRole('option').filter({ hasText: 'E2E 自动保存' }),
+    page
+      .getByRole('listbox', { name: '知识卡片搜索结果' })
+      .getByRole('option')
+      .filter({ hasText: 'E2E 自动保存' }),
   ).toHaveCount(1)
 })
 
@@ -101,7 +115,7 @@ test('JSON backup restores complete card and rejects invalid file', async ({
   ).toBeVisible()
   await page.getByRole('button', { name: '导入与备份' }).click()
   const downloadPromise = page.waitForEvent('download')
-  await page.getByRole('button', { name: '导出备份' }).click()
+  await page.getByRole('button', { name: '导出兼容备份' }).click()
   const download = await downloadPromise
   expect(download.suggestedFilename()).toMatch(/\.json$/)
   await page.getByRole('button', { name: '关闭弹窗' }).click()
@@ -117,7 +131,10 @@ test('JSON backup restores complete card and rejects invalid file', async ({
   await page.getByRole('button', { name: '仅导入卡片' }).click()
   await page.getByRole('textbox', { name: '搜索知识卡片' }).fill('marker-739')
   await expect(
-    page.getByRole('option').filter({ hasText: '备份往返 E2E' }),
+    page
+      .getByRole('listbox', { name: '知识卡片搜索结果' })
+      .getByRole('option')
+      .filter({ hasText: '备份往返 E2E' }),
   ).toHaveCount(1)
 })
 
@@ -138,7 +155,7 @@ test('history, recycle bin and selective backup restore recover previous content
 
   await page.getByRole('button', { name: '导入与备份' }).click()
   const downloadPromise = page.waitForEvent('download')
-  await page.getByRole('button', { name: '导出备份' }).click()
+  await page.getByRole('button', { name: '导出兼容备份' }).click()
   const download = await downloadPromise
   await page.getByRole('button', { name: '关闭弹窗' }).click()
 
@@ -177,19 +194,28 @@ test('history, recycle bin and selective backup restore recover previous content
   await page.getByRole('button', { name: '删除当前卡片' }).click()
   await page.getByRole('button', { name: '确认删除' }).click()
   await expect(
-    page.getByRole('option').filter({ hasText: '恢复流程 E2E' }),
+    page
+      .getByRole('listbox', { name: '知识卡片搜索结果' })
+      .getByRole('option')
+      .filter({ hasText: '恢复流程 E2E' }),
   ).toHaveCount(0)
   await page.reload()
   await page.getByRole('button', { name: '回收站' }).click()
   await expect(page.getByRole('dialog')).toContainText('恢复流程 E2E')
   await page.getByRole('button', { name: '恢复卡片' }).click()
   await expect(
-    page.getByRole('option').filter({ hasText: '恢复流程 E2E' }),
+    page
+      .getByRole('listbox', { name: '知识卡片搜索结果' })
+      .getByRole('option')
+      .filter({ hasText: '恢复流程 E2E' }),
   ).toHaveCount(1)
   await page.getByRole('button', { name: '删除当前卡片' }).click()
   await page.getByRole('button', { name: '确认删除' }).click()
   await expect(
-    page.getByRole('option').filter({ hasText: '恢复流程 E2E' }),
+    page
+      .getByRole('listbox', { name: '知识卡片搜索结果' })
+      .getByRole('option')
+      .filter({ hasText: '恢复流程 E2E' }),
   ).toHaveCount(0)
   await page.getByRole('button', { name: '回收站' }).click()
   await page.getByRole('button', { name: '永久删除', exact: true }).click()
@@ -223,7 +249,7 @@ test('complete backup restores history and recycle bin together', async ({
 
   await page.getByRole('button', { name: '导入与备份' }).click()
   const downloadPromise = page.waitForEvent('download')
-  await page.getByRole('button', { name: '导出备份' }).click()
+  await page.getByRole('button', { name: '导出兼容备份' }).click()
   const download = await downloadPromise
   const buffer = await readFile(await download.path())
   const exported = JSON.parse(buffer.toString('utf8'))
@@ -268,7 +294,7 @@ test('complete backup restores history and recycle bin together', async ({
   await page.getByRole('button', { name: '恢复完整工作区' }).click()
   await expect(
     page.getByRole('dialog', { name: '恢复完整工作区？' }),
-  ).toContainText('当前工作区的卡片、历史和回收站都会被替换')
+  ).toContainText('当前工作区的卡片、历史、回收站和置顶状态都会被替换')
   await page.getByRole('button', { name: '确认替换并完整恢复' }).click()
   await page.getByRole('option').filter({ hasText: '完整备份历史' }).click()
   await page.getByRole('button', { name: '编辑', exact: true }).click()
@@ -303,7 +329,11 @@ test('concurrent tabs report a conflict and preserve a copy', async ({
   ).toBeVisible()
   const second = await context.newPage()
   await second.goto('/')
-  await second.getByRole('option').filter({ hasText: '并发起点 E2E' }).click()
+  await second
+    .getByRole('listbox', { name: '知识卡片搜索结果' })
+    .getByRole('option')
+    .filter({ hasText: '并发起点 E2E' })
+    .click()
   await Promise.all([
     first.getByRole('textbox', { name: '卡片标题' }).fill('并发修改 A'),
     second.getByRole('textbox', { name: '卡片标题' }).fill('并发修改 B'),
@@ -319,7 +349,10 @@ test('concurrent tabs report a conflict and preserve a copy', async ({
   await expect(loser.getByRole('alert')).toContainText('已在其他页面更新')
   await loser.getByRole('button', { name: '保留为副本' }).click()
   await expect(
-    loser.getByRole('option').filter({ hasText: '（恢复副本）' }),
+    loser
+      .getByRole('listbox', { name: '知识卡片搜索结果' })
+      .getByRole('option')
+      .filter({ hasText: '（恢复副本）' }),
   ).toHaveCount(1)
 })
 
@@ -345,16 +378,21 @@ test('mobile list and lab remain usable without page overflow', async ({
   ).toBe(true)
   await page.getByRole('button', { name: '返回卡片列表' }).click()
   await expect(
-    page.getByRole('option').filter({ hasText: '窄屏 E2E' }),
+    page
+      .getByRole('listbox', { name: '知识卡片搜索结果' })
+      .getByRole('option')
+      .filter({ hasText: '窄屏 E2E' }),
   ).toBeVisible()
   await page
     .getByRole('textbox', { name: '搜索知识卡片' })
     .fill('marker-mobile')
-  await expect(page.getByRole('option')).toHaveCount(1)
+  await expect(
+    page.getByRole('listbox', { name: '知识卡片搜索结果' }).getByRole('option'),
+  ).toHaveCount(1)
   await page.getByRole('button', { name: '打开导航' }).click()
   await page.getByRole('button', { name: '导入与备份' }).click()
   const downloadPromise = page.waitForEvent('download')
-  await page.getByRole('button', { name: '导出备份' }).click()
+  await page.getByRole('button', { name: '导出兼容备份' }).click()
   expect((await downloadPromise).suggestedFilename()).toMatch(/\.json$/)
 })
 
@@ -372,12 +410,19 @@ test('demo cards reset without affecting the regular workspace', async ({
   await page.getByRole('button', { name: '使用帮助' }).click()
   await page.getByRole('button', { name: '重置演示卡片' }).click()
   await page.getByRole('button', { name: '确认重置演示空间' }).click()
-  await expect(page.getByRole('option')).toHaveCount(3)
   await expect(
-    page.getByRole('option').filter({ hasText: '仅演示空间的修改' }),
+    page.getByRole('listbox', { name: '知识卡片搜索结果' }).getByRole('option'),
+  ).toHaveCount(3)
+  await expect(
+    page
+      .getByRole('listbox', { name: '知识卡片搜索结果' })
+      .getByRole('option')
+      .filter({ hasText: '仅演示空间的修改' }),
   ).toHaveCount(0)
   await page.goto('/')
-  await expect(page.getByRole('option')).toHaveCount(3)
+  await expect(
+    page.getByRole('listbox', { name: '知识卡片搜索结果' }).getByRole('option'),
+  ).toHaveCount(3)
 })
 
 test('long result lists load incrementally and code editor supports indent and undo', async ({
@@ -386,7 +431,9 @@ test('long result lists load incrementally and code editor supports indent and u
 }) => {
   test.skip(isMobile, 'Desktop list and keyboard editing check')
   await page.goto('/')
-  await expect(page.getByRole('option')).toHaveCount(3)
+  await expect(
+    page.getByRole('listbox', { name: '知识卡片搜索结果' }).getByRole('option'),
+  ).toHaveCount(3)
   await page.evaluate(async () => {
     const request = indexedDB.open('dev-knowledge-lab')
     const database = await new Promise<IDBDatabase>((resolve, reject) => {
@@ -418,9 +465,13 @@ test('long result lists load incrementally and code editor supports indent and u
     database.close()
   })
   await page.reload()
-  await expect(page.getByRole('option')).toHaveCount(100)
+  await expect(
+    page.getByRole('listbox', { name: '知识卡片搜索结果' }).getByRole('option'),
+  ).toHaveCount(100)
   await page.getByRole('button', { name: /加载更多/ }).click()
-  await expect(page.getByRole('option')).toHaveCount(104)
+  await expect(
+    page.getByRole('listbox', { name: '知识卡片搜索结果' }).getByRole('option'),
+  ).toHaveCount(104)
   await page.getByRole('button', { name: '代码实验室', exact: true }).click()
   const editor = page.getByRole('textbox', { name: 'HTML 代码' })
   await editor.fill('<div>hello</div>')

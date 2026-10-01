@@ -84,7 +84,11 @@ try {
         database.close()
       }, size)
       await page.reload()
-      await expect(page.getByRole('option')).toHaveCount(Math.min(size, 100))
+      await expect(
+        page
+          .getByRole('listbox', { name: '知识卡片搜索结果' })
+          .getByRole('option'),
+      ).toHaveCount(Math.min(size, 100))
       await page.evaluate(() => {
         const list = document.getElementById('search-results')
         const input = document.querySelector('input[aria-label="搜索知识卡片"]')

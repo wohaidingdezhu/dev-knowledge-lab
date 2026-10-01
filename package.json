@@ -14,6 +14,7 @@
     "test:e2e:offline": "playwright test -c playwright.offline.config.ts",
     "benchmark:search": "node --expose-gc scripts/benchmark-search.mjs",
     "benchmark:browser": "node scripts/benchmark-browser.mjs",
+    "benchmark:batch": "node scripts/benchmark-batch.mjs",
     "capture:demo": "node scripts/capture-demo.mjs"
   },
   "dependencies": {

@@ -8,8 +8,11 @@ test('invalid source can be rescued without changing the draft or reporting save
   isMobile,
 }) => {
   await page.goto('/')
-  await expect(page.getByRole('option')).toHaveCount(3)
-  await page.getByRole('option').first().click()
+  const cardOptions = page
+    .getByRole('listbox', { name: '知识卡片搜索结果' })
+    .getByRole('option')
+  await expect(cardOptions).toHaveCount(3)
+  await cardOptions.first().click()
   await page.getByRole('textbox', { name: '卡片标题' }).fill('需要保全的草稿')
   const source = page.getByRole('textbox', { name: '来源链接' })
   await source.fill('developer.mozilla.org')
@@ -34,11 +37,11 @@ test('invalid source can be rescued without changing the draft or reporting save
   if (isMobile) await page.getByRole('button', { name: '打开导航' }).click()
   await page.getByRole('button', { name: '导入与备份' }).click()
   const normalDownload = page.waitForEvent('download')
-  await page.getByRole('button', { name: '导出备份' }).click()
+  await page.getByRole('button', { name: '导出兼容备份' }).click()
   expect((await normalDownload).suggestedFilename()).not.toMatch(
     /\.draft\.json$/,
   )
-  await expect(page.getByRole('dialog')).toContainText('上次发起导出')
+  await expect(page.getByRole('dialog')).toContainText('上次备份')
   await expect(page.getByRole('dialog')).not.toContainText('尚无记录')
   await page.reload()
   if (isMobile) await page.getByRole('button', { name: '打开导航' }).click()
@@ -61,14 +64,18 @@ test('storage status and persistence result are visible in backup dialog', async
     })
   })
   await page.goto('/')
-  await expect(page.getByRole('option')).toHaveCount(3)
+  await expect(
+    page.getByRole('listbox', { name: '知识卡片搜索结果' }).getByRole('option'),
+  ).toHaveCount(3)
   if (isMobile) await page.getByRole('button', { name: '打开导航' }).click()
   await page.getByRole('button', { name: '导入与备份' }).click()
   const dialog = page.getByRole('dialog')
   await expect(dialog).toContainText('建议现在导出备份')
-  await expect(dialog).toContainText('当前站点约 1.0 MiB / 配额约 10.0 MiB')
+  await expect(dialog).toContainText(
+    '本站已用估计 1.0 MiB / 总配额估计 10.0 MiB',
+  )
   await dialog.getByRole('button', { name: '申请持久存储' }).click()
-  await expect(dialog).toContainText('浏览器已授予持久存储')
+  await expect(dialog).toContainText('浏览器已允许持久存储')
   await expect(
     dialog.getByRole('button', { name: '申请持久存储' }),
   ).toHaveCount(0)
@@ -91,7 +98,9 @@ test('backup reading locks competing operations and unlocks after success or err
     }
   })
   await page.goto('/')
-  await expect(page.getByRole('option')).toHaveCount(3)
+  await expect(
+    page.getByRole('listbox', { name: '知识卡片搜索结果' }).getByRole('option'),
+  ).toHaveCount(3)
   if (isMobile) await page.getByRole('button', { name: '打开导航' }).click()
   await page.getByRole('button', { name: '导入与备份' }).click()
   const input = page.getByLabel('选择 JSON 或 ZIP 备份文件')
@@ -121,6 +130,6 @@ test('backup reading locks competing operations and unlocks after success or err
   )
   await expect(page.getByRole('dialog').getByRole('alert')).toBeVisible()
   await expect(input).toBeEnabled()
-  await expect(page.getByRole('button', { name: '导出备份' })).toBeEnabled()
+  await expect(page.getByRole('button', { name: '导出兼容备份' })).toBeEnabled()
   await expect(page.locator('.import-preview')).toHaveCount(0)
 })

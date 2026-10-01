@@ -10,7 +10,9 @@ test('main view and backup dialog have accessible structure', async ({
     'Desktop accessibility scan; mobile workflow is covered separately',
   )
   await page.goto('/')
-  await expect(page.getByRole('option')).toHaveCount(3)
+  await expect(
+    page.getByRole('listbox', { name: '知识卡片搜索结果' }).getByRole('option'),
+  ).toHaveCount(3)
   const main = await new AxeBuilder({ page })
     .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
     .analyze()
@@ -20,6 +22,25 @@ test('main view and backup dialog have accessible structure', async ({
       nodes: violation.nodes.map((node) => node.target),
     })),
   ).toEqual([])
+
+  await page.getByRole('button', { name: '批量整理' }).click()
+  const firstCard = page
+    .getByRole('listbox', { name: '知识卡片搜索结果' })
+    .getByRole('option')
+    .first()
+  await firstCard.focus()
+  await firstCard.press('Space')
+  await expect(firstCard).toHaveAttribute('aria-selected', 'true')
+  const batch = await new AxeBuilder({ page })
+    .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
+    .analyze()
+  expect(
+    batch.violations.map((violation) => ({
+      id: violation.id,
+      nodes: violation.nodes.map((node) => node.target),
+    })),
+  ).toEqual([])
+  await page.getByRole('button', { name: '完成整理' }).click()
 
   const trigger = page.getByRole('button', { name: '导入与备份' })
   await trigger.focus()
@@ -55,7 +76,9 @@ test('keyboard can create, find, run, open backup and delete', async ({
 }) => {
   test.skip(isMobile, 'Desktop keyboard sequence')
   await page.goto('/')
-  await expect(page.getByRole('option')).toHaveCount(3)
+  await expect(
+    page.getByRole('listbox', { name: '知识卡片搜索结果' }).getByRole('option'),
+  ).toHaveCount(3)
   const newButton = page.getByRole('button', { name: '新建知识卡片' })
   await newButton.focus()
   await page.keyboard.press('Enter')
@@ -88,6 +111,9 @@ test('keyboard can create, find, run, open backup and delete', async ({
   await page.keyboard.press('Enter')
   await page.getByRole('button', { name: '确认删除' }).press('Enter')
   await expect(
-    page.getByRole('option').filter({ hasText: '键盘操作 E2E' }),
+    page
+      .getByRole('listbox', { name: '知识卡片搜索结果' })
+      .getByRole('option')
+      .filter({ hasText: '键盘操作 E2E' }),
   ).toHaveCount(0)
 })

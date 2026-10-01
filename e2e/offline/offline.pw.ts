@@ -17,7 +17,11 @@ test('a returning visitor can reopen and edit cards without network', async ({
   await page.close()
   const reopened = await context.newPage()
   await reopened.goto('/')
-  await reopened.getByRole('option').filter({ hasText: '离线重开 E2E' }).click()
+  await reopened
+    .getByRole('listbox', { name: '知识卡片搜索结果' })
+    .getByRole('option')
+    .filter({ hasText: '离线重开 E2E' })
+    .click()
   await reopened
     .getByRole('textbox', { name: '卡片标题' })
     .fill('离线重开并修改 E2E')
@@ -26,6 +30,9 @@ test('a returning visitor can reopen and edit cards without network', async ({
   ).toBeVisible()
   await reopened.reload()
   await expect(
-    reopened.getByRole('option').filter({ hasText: '离线重开并修改 E2E' }),
+    reopened
+      .getByRole('listbox', { name: '知识卡片搜索结果' })
+      .getByRole('option')
+      .filter({ hasText: '离线重开并修改 E2E' }),
   ).toBeVisible()
 })

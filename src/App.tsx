@@ -13,10 +13,10 @@ import {
   ArrowUp,
   BookOpen,
   Check,
-  ChevronDown,
   ChevronRight,
   CircleHelp,
   Code2,
+  Copy,
   Download,
   FileCode2,
   FileText,
@@ -28,6 +28,7 @@ import {
   LoaderCircle,
   Menu,
   Pencil,
+  Pin,
   Plus,
   History,
   Search,
@@ -37,28 +38,41 @@ import {
   Upload,
   X,
 } from 'lucide-react'
+import { liveQuery } from 'dexie'
 import {
+  batchDelete,
+  batchPin,
+  batchTag,
   createCard,
+  db,
   deleteCard,
   demoMode,
+  duplicateCard,
+  exportFullSnapshot,
   exportWorkspace,
+  getLastBackup,
   getWorkspaceMarker,
   importCards,
   listHistory,
   listTrash,
   purgeDeletedCard,
+  recordBackup,
+  renameTag,
+  replaceFullSnapshot,
   resetDemoCards,
   replaceWorkspace,
   restoreBackupCards,
   restoreCard,
   restoreDeletedCard,
   restoreVersion,
+  togglePin,
 } from './lib/db'
-import { createDraftFile, validateSource } from './lib/backup'
-import {
-  createWorkspaceBackupFile,
-  readPortableBackupFile,
-} from './lib/workspaceBackup'
+import type { CardSelection } from './lib/db'
+import { createBackupFile, createDraftFile, validateSource } from './lib/backup'
+import { createFullBackupFile } from './lib/fullBackup'
+import { readAnyBackupFile } from './lib/portableBackup'
+import { createWorkspaceBackupFile } from './lib/workspaceBackup'
+
 import { makeKnowledgePackCards } from './lib/knowledgePack'
 import { searchCards } from './lib/search'
 import { useKnowledge } from './lib/useKnowledge'
@@ -67,6 +81,7 @@ import type {
   Card,
   CardHistoryEntry,
   DeletedCard,
+  FullSnapshot,
   RestoreChoice,
   RestoreDecision,
   WorkspaceData,
@@ -85,21 +100,9 @@ const hasCode = (card: Card) =>
 const errorText = (cause: unknown) =>
   cause instanceof Error ? cause.message : '操作失败，请重试。'
 const dateTime = (value: string) => new Date(value).toLocaleString('zh-CN')
-const formatStorageSize = (bytes: number) =>
-  bytes < 1024 * 1024
-    ? `${Math.ceil(bytes / 1024)} KiB`
-    : `${(bytes / (1024 * 1024)).toFixed(1)} MiB`
-const lastBackupKey = demoMode
-  ? 'pianduan-demo-last-backup'
-  : 'pianduan-last-backup'
-const readLastBackup = (): string | null => {
-  try {
-    const value = localStorage.getItem(lastBackupKey)
-    return value && Number.isFinite(Date.parse(value)) ? value : null
-  } catch {
-    return null
-  }
-}
+const storageSize = (value?: number) =>
+  value === undefined ? '未知' : `${(value / 1024 / 1024).toFixed(1)} MiB`
+
 const cardContents = (card: Card) =>
   `标题：${card.title}\n标签：${card.tags.join('、') || '无'}\n来源：${card.source || '无'}\n\n正文：\n${card.body}\n\nHTML：\n${card.html}\n\nCSS：\n${card.css}\n\nJavaScript：\n${card.js}`
 
@@ -213,8 +216,17 @@ function Tags({
 }
 
 export default function App() {
-  const { cards, cardsRef, loading, error, status, update, flush, discard } =
-    useKnowledge()
+  const {
+    cards,
+    cardsRef,
+    loading,
+    error,
+    status,
+    update,
+    flush,
+    discard,
+    workspaceGeneration,
+  } = useKnowledge()
   const {
     needRefresh: [needRefresh, setNeedRefresh],
     offlineReady: [offlineReady, setOfflineReady],
@@ -239,6 +251,10 @@ export default function App() {
     | 'purge'
     | 'knowledge-pack'
     | 'replace-workspace'
+    | 'tags'
+    | 'restore-full'
+    | 'batch-tag'
+    | 'batch-delete'
     | null
   >(null)
   const [imported, setImported] = useState<Card[] | null>(null)
@@ -260,30 +276,60 @@ export default function App() {
   const [historyPreviewId, setHistoryPreviewId] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const backupInFlight = useRef(false)
-  const [lastBackupAt, setLastBackupAt] = useState(readLastBackup)
-  const [storageEstimate, setStorageEstimate] =
-    useState<StorageEstimate | null>(null)
-  const [persistentStorage, setPersistentStorage] = useState<boolean | null>(
-    null,
-  )
-  const [persistenceMessage, setPersistenceMessage] = useState('')
   const [notice, setNotice] = useState('')
   const [deleted, setDeleted] = useState<Card | null>(null)
   const [cursor, setCursor] = useState(0)
   const [visibleCount, setVisibleCount] = useState(100)
+  const [sortMode, setSortMode] = useState<
+    'updated-desc' | 'updated-asc' | 'created-desc' | 'title'
+  >('updated-desc')
+  const [batchMode, setBatchMode] = useState(false)
+  const [batchIds, setBatchIds] = useState<string[]>([])
+  const [batchAction, setBatchAction] = useState<'add' | 'remove'>('add')
+  const [batchTagValue, setBatchTagValue] = useState('')
+  const batchIdSet = useMemo(() => new Set(batchIds), [batchIds])
+  const [pinnedIds, setPinnedIds] = useState<string[]>([])
+  const [tagFrom, setTagFrom] = useState('')
+  const [tagTo, setTagTo] = useState('')
+  const [fullImport, setFullImport] = useState<FullSnapshot | null>(null)
+  const [fullImportBaseline, setFullImportBaseline] = useState<string | null>(
+    null,
+  )
+  const [lastBackup, setLastBackup] = useState<string | null>(null)
+  const [backupReady, setBackupReady] = useState(false)
+  const [reminderDismissed, setReminderDismissed] = useState(false)
+  const [storageInfo, setStorageInfo] = useState<{
+    usage?: number
+    quota?: number
+    persisted?: boolean
+  } | null>(null)
   const knowledgePack = useMemo(() => makeKnowledgePackCards(), [])
   const searchRef = useRef<HTMLInputElement>(null)
   const titleRef = useRef<HTMLInputElement>(null)
-  const results = useMemo(
-    () =>
-      searchCards(
-        collection === 'code' ? cards.filter(hasCode) : cards,
-        query,
-        tag,
-      ),
-    [cards, query, tag, collection],
-  )
+  const results = useMemo(() => {
+    const matches = searchCards(
+      collection === 'code' ? cards.filter(hasCode) : cards,
+      query,
+      tag,
+    )
+    if (query.trim()) return matches
+    const pins = new Set(pinnedIds)
+    return matches.sort((left, right) => {
+      const pinOrder =
+        Number(pins.has(right.card.id)) - Number(pins.has(left.card.id))
+      if (pinOrder) return pinOrder
+      if (sortMode === 'title')
+        return left.card.title.localeCompare(right.card.title, 'zh-CN')
+      const field = sortMode === 'created-desc' ? 'createdAt' : 'updatedAt'
+      const direction = sortMode === 'updated-asc' ? 1 : -1
+      return direction * left.card[field].localeCompare(right.card[field])
+    })
+  }, [cards, query, tag, collection, pinnedIds, sortMode])
   const selected = cards.find((card) => card.id === selectedId)
+  const batchCards = cards.filter((card) => batchIdSet.has(card.id))
+  const batchTags = [...new Set(batchCards.flatMap((card) => card.tags))].sort(
+    (left, right) => left.localeCompare(right, 'zh-CN'),
+  )
   const tags = useMemo(
     () =>
       [...new Set(cards.flatMap((card) => card.tags))].sort((a, b) =>
@@ -296,6 +342,42 @@ export default function App() {
   const knowledgePackMissing = knowledgePack.filter(
     (card) => !cards.some((existing) => existing.id === card.id),
   )
+  const needsBackup =
+    backupReady &&
+    !demoMode &&
+    cards.length > 3 &&
+    (!lastBackup ||
+      Date.now() - Date.parse(lastBackup) > 30 * 24 * 60 * 60 * 1000)
+
+  useEffect(() => {
+    const subscription = liveQuery(() => db.pins.toArray()).subscribe({
+      next: (pins) => setPinnedIds(pins.map(({ id }) => id)),
+      error: (cause) => setNotice(errorText(cause)),
+    })
+    void getLastBackup()
+      .then(setLastBackup)
+      .catch((cause) => setNotice(errorText(cause)))
+      .finally(() => setBackupReady(true))
+    void refreshStorage()
+    return () => subscription.unsubscribe()
+  }, [])
+
+  async function refreshStorage() {
+    try {
+      if (!navigator.storage) return
+      const [estimate, persisted] = await Promise.all([
+        navigator.storage.estimate?.(),
+        navigator.storage.persisted?.(),
+      ])
+      setStorageInfo({
+        usage: estimate?.usage,
+        quota: estimate?.quota,
+        persisted,
+      })
+    } catch {
+      setStorageInfo(null)
+    }
+  }
 
   useEffect(() => {
     if (!loading && !selectedId && cards.length)
@@ -325,31 +407,6 @@ export default function App() {
       return () => clearTimeout(timer)
     }
   }, [notice])
-  useEffect(() => {
-    if (modal !== 'backup' || !navigator.storage) return
-    let active = true
-    if (navigator.storage.estimate)
-      void navigator.storage
-        .estimate()
-        .then((estimate) => {
-          if (active) setStorageEstimate(estimate)
-        })
-        .catch(() => {
-          if (active) setStorageEstimate(null)
-        })
-    if (navigator.storage.persisted)
-      void navigator.storage
-        .persisted()
-        .then((persisted) => {
-          if (active) setPersistentStorage(persisted)
-        })
-        .catch(() => {
-          if (active) setPersistentStorage(null)
-        })
-    return () => {
-      active = false
-    }
-  }, [modal])
 
   const select = async (card: Card) => {
     if (!(await flush())) return
@@ -372,6 +429,13 @@ export default function App() {
       setMobileDetail(true)
       setSidebarOpen(false)
       setTimeout(() => {
+        const active = document.activeElement
+        if (
+          active instanceof HTMLInputElement ||
+          active instanceof HTMLTextAreaElement ||
+          (active instanceof HTMLElement && active.isContentEditable)
+        )
+          return
         titleRef.current?.focus()
         titleRef.current?.select()
       }, 80)
@@ -440,13 +504,9 @@ export default function App() {
       anchor.click()
       setTimeout(() => URL.revokeObjectURL(url), 1000)
       if (!draft) {
-        const exportedAt = new Date().toISOString()
-        setLastBackupAt(exportedAt)
-        try {
-          localStorage.setItem(lastBackupKey, exportedAt)
-        } catch {
-          // Browsers can disable localStorage while still allowing downloads.
-        }
+        const now = new Date().toISOString()
+        await recordBackup(now)
+        setLastBackup(now)
       }
       setNotice(
         draft
@@ -459,6 +519,200 @@ export default function App() {
       setNotice(errorText(cause))
     } finally {
       backupInFlight.current = false
+      setBusy(false)
+    }
+  }
+  const exportFullBackup = async () => {
+    if (!(await flush())) {
+      setNotice('请先解决未保存的修改，再导出完整归档。')
+      return
+    }
+    setBusy(true)
+    try {
+      const snapshot = await exportFullSnapshot()
+      const file = await createFullBackupFile(snapshot)
+      const url = URL.createObjectURL(file)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = `pianduan-full-${new Date().toISOString().slice(0, 10)}.zip`
+      anchor.click()
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+      await recordBackup(snapshot.exportedAt)
+      setLastBackup(snapshot.exportedAt)
+      setReminderDismissed(true)
+      setNotice(
+        `完整归档已导出：${snapshot.cards.length} 张卡片、${snapshot.history.length} 个历史版本、${snapshot.trash.length} 张回收站卡片。`,
+      )
+      void refreshStorage()
+    } catch (cause) {
+      setNotice(errorText(cause))
+    } finally {
+      setBusy(false)
+    }
+  }
+  const copySelected = async () => {
+    if (!selected || !(await flush())) return
+    setBusy(true)
+    try {
+      const copy = await duplicateCard(selected.id)
+      setSelectedId(copy.id)
+      setTag(null)
+      setQuery('')
+      setCollection('all')
+      setTab('note')
+      setNotice('已创建独立副本，可以放心修改。')
+    } catch (cause) {
+      setNotice(errorText(cause))
+    } finally {
+      setBusy(false)
+    }
+  }
+  const changePin = async () => {
+    if (!selected) return
+    try {
+      const pinned = await togglePin(selected.id)
+      setNotice(pinned ? '卡片已置顶。' : '已取消置顶。')
+    } catch (cause) {
+      setNotice(errorText(cause))
+    }
+  }
+  const toggleBatchCard = (id: string) => {
+    setBatchIds((ids) => {
+      if (ids.includes(id)) return ids.filter((item) => item !== id)
+      if (ids.length >= 5000) {
+        setNotice('一次最多整理 5000 张卡片。')
+        return ids
+      }
+      return [...ids, id]
+    })
+  }
+  const currentBatch = (): { cards: Card[]; selection: CardSelection[] } => {
+    const byId = new Map(cardsRef.current.map((card) => [card.id, card]))
+    const chosen = batchIds.map((id) => byId.get(id))
+    if (!chosen.length || chosen.some((card) => !card))
+      throw new Error('选择的卡片已变化，请重新选择。')
+    const current = chosen as Card[]
+    return {
+      cards: current,
+      selection: current.map(({ id, revision }) => ({ id, revision })),
+    }
+  }
+  const applyBatchTag = async () => {
+    if (!(await flush())) return
+    setBusy(true)
+    try {
+      const { selection } = currentBatch()
+      const count = await batchTag(
+        selection,
+        batchAction,
+        batchTagValue,
+        workspaceGeneration(),
+      )
+      setBatchIds([])
+      setModal(null)
+      setNotice(
+        `已为 ${count} 张卡片${batchAction === 'add' ? '添加' : '移除'}标签。`,
+      )
+    } catch (cause) {
+      setNotice(errorText(cause))
+    } finally {
+      setBusy(false)
+    }
+  }
+  const applyBatchPin = async (pin: boolean) => {
+    if (!(await flush())) return
+    setBusy(true)
+    try {
+      const { selection } = currentBatch()
+      const count = await batchPin(selection, pin, workspaceGeneration())
+      setBatchIds([])
+      setNotice(`已${pin ? '置顶' : '取消置顶'} ${count} 张卡片。`)
+    } catch (cause) {
+      setNotice(errorText(cause))
+    } finally {
+      setBusy(false)
+    }
+  }
+  const applyBatchDelete = async () => {
+    if (!(await flush())) return
+    setBusy(true)
+    try {
+      const { selection } = currentBatch()
+      const count = await batchDelete(selection, workspaceGeneration())
+      setBatchIds([])
+      setBatchMode(false)
+      setDeleted(null)
+      setSelectedId(null)
+      setModal(null)
+      setMobileDetail(false)
+      setNotice(`已将 ${count} 张卡片移入回收站，可逐张恢复。`)
+    } catch (cause) {
+      setNotice(errorText(cause))
+    } finally {
+      setBusy(false)
+    }
+  }
+  const exportBatch = async () => {
+    if (!(await flush())) return
+    setBusy(true)
+    try {
+      const { cards: chosen } = currentBatch()
+      const backup = await createBackupFile(chosen)
+      const url = URL.createObjectURL(backup.data)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = `pianduan-selected-${new Date().toISOString().slice(0, 10)}.${backup.extension}`
+      anchor.click()
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+      setNotice(`已导出选中的 ${chosen.length} 张卡片。`)
+    } catch (cause) {
+      setNotice(errorText(cause))
+    } finally {
+      setBusy(false)
+    }
+  }
+  const applyTagRename = async () => {
+    if (!(await flush())) return
+    setBusy(true)
+    try {
+      const count = await renameTag(tagFrom, tagTo)
+      if (tag === tagFrom) setTag(tagTo.trim())
+      setModal(null)
+      setNotice(`已更新 ${count} 张卡片的标签。`)
+    } catch (cause) {
+      setNotice(errorText(cause))
+    } finally {
+      setBusy(false)
+    }
+  }
+  const applyFullRestore = async () => {
+    if (!fullImport || !fullImportBaseline || !(await flush())) return
+    setBusy(true)
+    try {
+      await replaceFullSnapshot(fullImport, fullImportBaseline)
+      await discard()
+      setSelectedId(null)
+      setTag(null)
+      setQuery('')
+      setCollection('all')
+      setMobileDetail(false)
+      setEditing(false)
+      setDeleted(null)
+      setImported(null)
+      setBatchMode(false)
+      setBatchIds([])
+      setLastBackup(fullImport.exportedAt)
+      setFullImport(null)
+      setFullImportBaseline(null)
+      setModal(null)
+      setNotice('完整归档已恢复，卡片、历史、回收站和置顶状态均已载入。')
+      void refreshStorage()
+    } catch (cause) {
+      setImportError(errorText(cause))
+      setFullImport(null)
+      setFullImportBaseline(null)
+      setModal('backup')
+    } finally {
       setBusy(false)
     }
   }
@@ -526,7 +780,7 @@ export default function App() {
     setBusy(true)
     try {
       const latest = cardsRef.current.find((card) => card.id === selected.id)!
-      await deleteCard(latest)
+      await deleteCard(latest, workspaceGeneration())
       setDeleted(latest)
       setSelectedId(null)
       setModal(null)
@@ -638,7 +892,22 @@ export default function App() {
           </button>
         </nav>
         <div className="nav-caption tags-caption">
-          标签 <span>{tags.length}</span>
+          标签
+          <span>
+            {tags.length}
+            {!!tags.length && (
+              <button
+                className="tag-manage"
+                onClick={() => {
+                  setTagFrom(tags[0])
+                  setTagTo('')
+                  setModal('tags')
+                }}
+              >
+                整理
+              </button>
+            )}
+          </span>
         </div>
         <nav className="tag-nav" aria-label="标签筛选">
           {tags.map((item) => (
@@ -700,6 +969,8 @@ export default function App() {
               setImportName('')
               setImportExisting(Object.create(null))
               setImportChoices({})
+              setFullImport(null)
+              setFullImportBaseline(null)
             }}
           >
             <HardDrive size={17} />
@@ -751,6 +1022,23 @@ export default function App() {
             </button>
           </div>
         </header>
+        {needsBackup && !reminderDismissed && (
+          <div className="backup-reminder" role="status">
+            <span>
+              {lastBackup
+                ? `上次备份于 ${dateTime(lastBackup)}，建议更新备份。`
+                : '这里已有你的笔记，建议导出一份备份。'}
+            </span>
+            <button onClick={() => setModal('backup')}>去备份</button>
+            <button
+              className="icon-button"
+              aria-label="暂时关闭备份提醒"
+              onClick={() => setReminderDismissed(true)}
+            >
+              <X size={14} />
+            </button>
+          </div>
+        )}
         <div className="workspace">
           <section className="collection-panel" aria-label="卡片列表">
             {error && !selected && (
@@ -813,7 +1101,8 @@ export default function App() {
                   }
                   if (event.key === 'Enter' && results[cursor]) {
                     event.preventDefault()
-                    void select(results[cursor].card)
+                    if (batchMode) toggleBatchCard(results[cursor].card.id)
+                    else void select(results[cursor].card)
                   }
                   if (event.key === 'Escape') setQuery('')
                 }}
@@ -845,17 +1134,112 @@ export default function App() {
                   </button>
                 )}
               </span>
-              <span>
-                {query ? (
-                  '标题 · 正文 · 代码'
-                ) : (
-                  <>
-                    <span>由新到旧</span>
-                    <ChevronDown size={12} />
-                  </>
-                )}
-              </span>
+              {query ? (
+                <span>按相关度</span>
+              ) : (
+                <select
+                  className="sort-select"
+                  aria-label="卡片排序"
+                  value={sortMode}
+                  onChange={(event) =>
+                    setSortMode(event.target.value as typeof sortMode)
+                  }
+                >
+                  <option value="updated-desc">最近更新</option>
+                  <option value="updated-asc">最早更新</option>
+                  <option value="created-desc">最近创建</option>
+                  <option value="title">按标题</option>
+                </select>
+              )}
             </div>
+            {(results.length > 0 || batchMode) && (
+              <div className="batch-controls">
+                <button
+                  className="text-button"
+                  onClick={() => {
+                    setBatchMode((value) => !value)
+                    setBatchIds([])
+                  }}
+                >
+                  {batchMode ? '完成整理' : '批量整理'}
+                </button>
+                {batchMode && (
+                  <span>已选 {batchCards.length} 张 · 点击卡片可选择</span>
+                )}
+              </div>
+            )}
+            {batchMode && (
+              <div className="batch-toolbar" aria-label="批量操作">
+                <div>
+                  <button
+                    onClick={() => {
+                      const visible = results
+                        .slice(0, visibleCount)
+                        .map(({ card }) => card.id)
+                      setBatchIds((ids) =>
+                        [...new Set([...ids, ...visible])].slice(0, 5000),
+                      )
+                    }}
+                    disabled={!results.length || busy}
+                  >
+                    选中当前显示
+                  </button>
+                  <button
+                    onClick={() => setBatchIds([])}
+                    disabled={!batchCards.length || busy}
+                  >
+                    清空选择
+                  </button>
+                </div>
+                <div>
+                  <button
+                    disabled={!batchCards.length || busy}
+                    onClick={() => {
+                      setBatchAction('add')
+                      setBatchTagValue('')
+                      setModal('batch-tag')
+                    }}
+                  >
+                    加标签
+                  </button>
+                  <button
+                    disabled={!batchTags.length || busy}
+                    onClick={() => {
+                      setBatchAction('remove')
+                      setBatchTagValue(batchTags[0])
+                      setModal('batch-tag')
+                    }}
+                  >
+                    移标签
+                  </button>
+                  <button
+                    disabled={!batchCards.length || busy}
+                    onClick={() => void applyBatchPin(true)}
+                  >
+                    置顶
+                  </button>
+                  <button
+                    disabled={!batchCards.length || busy}
+                    onClick={() => void applyBatchPin(false)}
+                  >
+                    取消置顶
+                  </button>
+                  <button
+                    disabled={!batchCards.length || busy}
+                    onClick={() => void exportBatch()}
+                  >
+                    导出选中
+                  </button>
+                  <button
+                    className="batch-delete-trigger"
+                    disabled={!batchCards.length || busy}
+                    onClick={() => setModal('batch-delete')}
+                  >
+                    移入回收站
+                  </button>
+                </div>
+              </div>
+            )}
             <div
               id="search-results"
               className="card-list"
@@ -874,10 +1258,17 @@ export default function App() {
                     <button
                       id={`result-${card.id}`}
                       role="option"
-                      aria-selected={card.id === selectedId}
-                      className={`card-item ${card.id === selectedId ? 'selected' : ''} ${query && index === cursor ? 'keyboard-current' : ''}`}
+                      aria-selected={
+                        batchMode
+                          ? batchIdSet.has(card.id)
+                          : card.id === selectedId
+                      }
+                      className={`card-item ${batchMode ? (batchIdSet.has(card.id) ? 'batch-selected' : '') : card.id === selectedId ? 'selected' : ''} ${query && index === cursor ? 'keyboard-current' : ''}`}
                       key={card.id}
-                      onClick={() => void select(card)}
+                      onClick={() => {
+                        if (batchMode) toggleBatchCard(card.id)
+                        else void select(card)
+                      }}
                       onKeyDown={(event) => {
                         if (
                           event.key === 'ArrowDown' ||
@@ -902,6 +1293,11 @@ export default function App() {
                       }}
                     >
                       <div className="card-item-heading">
+                        {batchMode && (
+                          <span className="batch-check" aria-hidden="true">
+                            {batchIdSet.has(card.id) && <Check size={12} />}
+                          </span>
+                        )}
                         <span
                           className={`file-icon ${hasCode(card) ? 'with-code' : ''}`}
                         >
@@ -912,6 +1308,9 @@ export default function App() {
                           )}
                         </span>
                         <span className="card-date">
+                          {pinnedIds.includes(card.id) && (
+                            <Pin size={11} aria-label="已置顶" />
+                          )}
                           {date(card.updatedAt)}
                         </span>
                       </div>
@@ -1029,6 +1428,36 @@ export default function App() {
                           ? '保存中…'
                           : '未保存'}
                     </span>
+                    <button
+                      className="icon-button"
+                      aria-label={
+                        pinnedIds.includes(selected.id)
+                          ? '取消置顶卡片'
+                          : '置顶卡片'
+                      }
+                      title={
+                        pinnedIds.includes(selected.id) ? '取消置顶' : '置顶'
+                      }
+                      onClick={() => void changePin()}
+                    >
+                      <Pin
+                        size={16}
+                        fill={
+                          pinnedIds.includes(selected.id)
+                            ? 'currentColor'
+                            : 'none'
+                        }
+                      />
+                    </button>
+                    <button
+                      className="icon-button"
+                      aria-label="复制当前卡片"
+                      title="复制为新卡片"
+                      onClick={() => void copySelected()}
+                      disabled={busy}
+                    >
+                      <Copy size={16} />
+                    </button>
                     <button
                       className="icon-button"
                       aria-label="查看卡片历史版本"
@@ -1422,11 +1851,127 @@ export default function App() {
           </div>
         </Dialog>
       )}
+      {modal === 'batch-tag' && (
+        <Dialog
+          title={batchAction === 'add' ? '批量添加标签' : '批量移除标签'}
+          description={`已选 ${batchCards.length} 张卡片。只修改需要变化的卡片，并为每张变更保留历史版本。`}
+          onClose={() => setModal(null)}
+        >
+          <div className="tag-rename-form">
+            {batchAction === 'add' ? (
+              <label>
+                标签名称
+                <input
+                  value={batchTagValue}
+                  maxLength={48}
+                  placeholder="输入新标签或已有标签"
+                  onChange={(event) => setBatchTagValue(event.target.value)}
+                />
+              </label>
+            ) : (
+              <label>
+                要移除的标签
+                <select
+                  value={batchTagValue}
+                  onChange={(event) => setBatchTagValue(event.target.value)}
+                >
+                  {batchTags.map((item) => (
+                    <option key={item} value={item}>
+                      {item}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+          </div>
+          <div className="dialog-actions">
+            <button className="secondary-button" onClick={() => setModal(null)}>
+              取消
+            </button>
+            <button
+              className="primary-button"
+              disabled={busy || !batchCards.length || !batchTagValue.trim()}
+              onClick={() => void applyBatchTag()}
+            >
+              确认{batchAction === 'add' ? '添加' : '移除'}
+            </button>
+          </div>
+        </Dialog>
+      )}
+      {modal === 'batch-delete' && (
+        <Dialog
+          title={`将 ${batchCards.length} 张卡片移入回收站？`}
+          description="会同时移除这些卡片的置顶状态；卡片和历史版本仍可从回收站逐张恢复。若有卡片在其他页面发生变化，本次操作会整体停止。"
+          onClose={() => setModal(null)}
+        >
+          <div className="dialog-actions">
+            <button className="secondary-button" onClick={() => setModal(null)}>
+              取消
+            </button>
+            <button
+              className="danger-button"
+              disabled={busy || !batchCards.length}
+              onClick={() => void applyBatchDelete()}
+            >
+              确认移入回收站
+            </button>
+          </div>
+        </Dialog>
+      )}
+      {modal === 'tags' && (
+        <Dialog
+          title="整理标签"
+          description="把一个标签改名，或填写已有标签名将两者合并。当前卡片会一起更新；历史版本保留当时的标签。"
+          onClose={() => setModal(null)}
+        >
+          <div className="tag-rename-form">
+            <label>
+              原标签
+              <select
+                value={tagFrom}
+                onChange={(event) => setTagFrom(event.target.value)}
+              >
+                {tags.map((item) => (
+                  <option key={item} value={item}>
+                    {item}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              改为
+              <input
+                value={tagTo}
+                maxLength={48}
+                placeholder="输入新标签或已有标签"
+                onChange={(event) => setTagTo(event.target.value)}
+              />
+            </label>
+            <p>
+              将更新{' '}
+              {cards.filter((card) => card.tags.includes(tagFrom)).length}{' '}
+              张卡片。
+            </p>
+          </div>
+          <div className="dialog-actions">
+            <button className="secondary-button" onClick={() => setModal(null)}>
+              取消
+            </button>
+            <button
+              className="primary-button"
+              disabled={busy || !tagTo.trim() || tagTo.trim() === tagFrom}
+              onClick={() => void applyTagRename()}
+            >
+              更新标签
+            </button>
+          </div>
+        </Dialog>
+      )}
       {modal === 'backup' && (
         <Dialog
           wide
           title="让每个片段，都有备份。"
-          description="数据保存在当前浏览器中。定期导出一份完整备份，换设备时也能把知识带走。"
+          description="数据保存在当前浏览器中。推荐导出完整归档，包含卡片、历史、回收站和置顶状态；导入时会自动识别旧版备份。"
           onClose={() => {
             if (!busy) setModal(null)
           }}
@@ -1436,59 +1981,75 @@ export default function App() {
               <Download size={22} />
             </span>
             <div>
-              <strong>导出知识库</strong>
-              <p>{cards.length} 张卡片 · 正文、源码、历史与回收站</p>
+              <strong>导出完整归档</strong>
+              <p>{cards.length} 张卡片 · 正文、源码、历史、回收站与置顶状态</p>
             </div>
             <button
-              className="secondary-button"
-              onClick={() => void exportBackup()}
+              className="primary-button"
+              onClick={() => void exportFullBackup()}
               disabled={busy}
             >
               <Download size={14} />
-              {busy ? '正在准备…' : '导出备份'}
+              {busy ? '正在准备…' : '导出完整归档'}
             </button>
           </div>
-          <div className="backup-health">
+          <div className="compat-backup-section">
             <div>
-              <strong>上次发起导出</strong>
-              <span>
-                {lastBackupAt ? dateTime(lastBackupAt) : '尚无记录'}
-                {!lastBackupAt ||
-                Date.now() - Date.parse(lastBackupAt) > 30 * 24 * 60 * 60 * 1000
-                  ? ' · 建议现在导出备份'
-                  : ''}
-              </span>
+              <strong>需要兼容格式？</strong>
+              <p>
+                兼容备份包含卡片、历史和回收站，不包含置顶状态；适合与旧版本交换数据。
+              </p>
             </div>
-            <div>
-              <strong>浏览器存储</strong>
-              <span>
-                {storageEstimate?.usage !== undefined
-                  ? `当前站点约 ${formatStorageSize(storageEstimate.usage)}${storageEstimate.quota !== undefined ? ` / 配额约 ${formatStorageSize(storageEstimate.quota)}` : ''}`
-                  : '浏览器未提供用量信息'}
-                {persistentStorage === true ? ' · 已获持久存储' : ''}
-              </span>
-            </div>
-            {persistentStorage === false && navigator.storage?.persist && (
+            <button
+              className="text-button"
+              onClick={() => void exportBackup()}
+              disabled={busy}
+            >
+              <Download size={14} /> 导出兼容备份
+            </button>
+          </div>
+          <div className="storage-summary">
+            <strong>本地存储</strong>
+            <span>
+              上次备份：{lastBackup ? dateTime(lastBackup) : '尚无记录'} ·
+              本站已用估计 {storageSize(storageInfo?.usage)} / 总配额估计{' '}
+              {storageSize(storageInfo?.quota)}
+            </span>
+            {(!lastBackup ||
+              Date.now() - Date.parse(lastBackup) >
+                30 * 24 * 60 * 60 * 1000) && <span>建议现在导出备份。</span>}
+            <span>
+              {storageInfo?.persisted === true
+                ? '浏览器已允许持久存储。'
+                : storageInfo?.persisted === false
+                  ? '当前未启用持久存储；清理站点数据仍可能删除笔记。'
+                  : '浏览器未提供持久存储状态；请继续定期导出备份。'}
+            </span>
+            {storageInfo?.persisted === false && navigator.storage?.persist && (
               <button
                 className="text-button"
                 onClick={async () => {
                   try {
                     const granted = await navigator.storage.persist()
-                    setPersistentStorage(granted)
-                    setPersistenceMessage(
+                    await refreshStorage()
+                    if (granted)
+                      setStorageInfo((current) => ({
+                        ...current,
+                        persisted: true,
+                      }))
+                    setNotice(
                       granted
-                        ? '浏览器已授予持久存储。仍请定期导出备份。'
-                        : '浏览器未授予持久存储；请定期导出备份。',
+                        ? '浏览器已允许持久存储，请继续定期导出备份。'
+                        : '浏览器未授予持久存储，请继续定期导出备份。',
                     )
-                  } catch {
-                    setPersistenceMessage('暂时无法申请持久存储。')
+                  } catch (cause) {
+                    setNotice(errorText(cause))
                   }
                 }}
               >
                 申请持久存储
               </button>
             )}
-            {persistenceMessage && <p role="status">{persistenceMessage}</p>}
             <small>导出时间只记录本机发起下载，请确认文件已保存。</small>
           </div>
           <div className="import-section">
@@ -1497,8 +2058,10 @@ export default function App() {
             </h3>
             <label className="file-drop">
               <Upload size={22} />
-              <strong>{importName || '选择 JSON / ZIP 备份文件'}</strong>
-              <span>导入前检查全部卡片与校验值 · ZIP 最大 100 MiB</span>
+              <strong>{importName || '选择备份文件（JSON / ZIP）'}</strong>
+              <span>
+                自动识别完整归档和旧版备份 · 导入前校验 · ZIP 最大 100 MiB
+              </span>
               <input
                 aria-label="选择 JSON 或 ZIP 备份文件"
                 type="file"
@@ -1509,6 +2072,9 @@ export default function App() {
                   const file = input.files?.[0]
                   if (!file || busy || backupInFlight.current) return
                   backupInFlight.current = true
+                  setFullImport(null)
+                  setFullImportBaseline(null)
+
                   setImported(null)
                   setFullBackup(null)
                   setImportBaseline(null)
@@ -1520,11 +2086,16 @@ export default function App() {
                   setImportError('')
                   setBusy(true)
                   try {
-                    const parsed = await readPortableBackupFile(file)
+                    const parsed = await readAnyBackupFile(file)
                     if (!(await flush()))
                       throw new Error(
                         '当前修改尚未保存，请先解决保存问题后再导入。',
                       )
+                    if (parsed.kind === 'full') {
+                      setFullImport(parsed.snapshot)
+                      setFullImportBaseline(await getWorkspaceMarker())
+                      return
+                    }
                     const byId = new Map(
                       cardsRef.current.map((card) => [card.id, card]),
                     )
@@ -1554,6 +2125,23 @@ export default function App() {
               <p className="field-error" role="alert">
                 {importError}
               </p>
+            )}
+            {fullImport && (
+              <div className="full-backup-preview">
+                <span>
+                  校验通过：{fullImport.cards.length} 张卡片、
+                  {fullImport.history.length} 个历史版本、
+                  {fullImport.trash.length} 张回收站卡片、
+                  {fullImport.pins.length} 张置顶卡片。
+                </span>
+                <button
+                  className="secondary-button"
+                  disabled={busy}
+                  onClick={() => setModal('restore-full')}
+                >
+                  恢复完整归档…
+                </button>
+              </div>
             )}
             {imported && (
               <div className="import-preview">
@@ -1678,7 +2266,7 @@ export default function App() {
       {modal === 'replace-workspace' && fullBackup && (
         <Dialog
           title="恢复完整工作区？"
-          description={`备份包含 ${fullBackup.cards.length} 张卡片、${fullBackup.history.length} 条历史版本和 ${fullBackup.trash.length} 张回收站卡片。当前工作区的卡片、历史和回收站都会被替换。`}
+          description={`备份包含 ${fullBackup.cards.length} 张卡片、${fullBackup.history.length} 条历史版本和 ${fullBackup.trash.length} 张回收站卡片。当前工作区的卡片、历史、回收站和置顶状态都会被替换。`}
           onClose={() => {
             if (!busy) setModal('backup')
           }}
@@ -1699,6 +2287,29 @@ export default function App() {
               onClick={() => void performFullRestore()}
             >
               确认替换并完整恢复
+            </button>
+          </div>
+        </Dialog>
+      )}
+      {modal === 'restore-full' && fullImport && (
+        <Dialog
+          title="替换当前工作区？"
+          description={`将从 ${dateTime(fullImport.exportedAt)} 的完整归档恢复。当前 ${cards.length} 张卡片及其历史、回收站、置顶状态会被替换；建议先导出当前工作区的完整归档。若其他页面在预览后修改数据，恢复会停止。`}
+          onClose={() => setModal('backup')}
+        >
+          <div className="dialog-actions">
+            <button
+              className="secondary-button"
+              onClick={() => setModal('backup')}
+            >
+              返回检查
+            </button>
+            <button
+              className="danger-button"
+              disabled={busy}
+              onClick={() => void applyFullRestore()}
+            >
+              确认替换并恢复
             </button>
           </div>
         </Dialog>

@@ -46,6 +46,16 @@ export interface WorkspaceData {
   trash: DeletedCard[]
 }
 
+export interface FullSnapshot {
+  format: 'pianduan-full-snapshot'
+  schemaVersion: 1
+  exportedAt: string
+  cards: Card[]
+  history: CardHistoryEntry[]
+  trash: DeletedCard[]
+  pins: string[]
+}
+
 export type RestoreChoice = 'skip' | 'copy' | 'replace'
 export interface RestoreDecision {
   choice: RestoreChoice

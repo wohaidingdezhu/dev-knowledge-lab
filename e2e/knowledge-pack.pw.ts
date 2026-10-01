@@ -6,16 +6,21 @@ test('knowledge pack can be added once without changing existing cards', async (
 }) => {
   await page.goto('/')
   if (isMobile) await page.getByRole('button', { name: '打开导航' }).click()
-  await expect(page.getByRole('option')).toHaveCount(3)
+  await expect(
+    page.getByRole('listbox', { name: '知识卡片搜索结果' }).getByRole('option'),
+  ).toHaveCount(3)
   await page.getByRole('button', { name: /前端知识内容包/ }).click()
   await expect(page.getByRole('dialog')).toContainText(
     '闭包：让每个计数器记住自己的状态',
   )
   await page.getByRole('button', { name: '添加 10 张知识卡片' }).click()
   if (isMobile) await page.getByRole('button', { name: '返回卡片列表' }).click()
-  await expect(page.getByRole('option')).toHaveCount(13)
+  await expect(
+    page.getByRole('listbox', { name: '知识卡片搜索结果' }).getByRole('option'),
+  ).toHaveCount(13)
   if (isMobile)
     await page
+      .getByRole('listbox', { name: '知识卡片搜索结果' })
       .getByRole('option')
       .filter({ hasText: '闭包：让每个计数器记住自己的状态' })
       .click()
@@ -34,7 +39,9 @@ test('knowledge pack can be added once without changing existing cards', async (
 
   await page.reload()
   if (isMobile) await page.getByRole('button', { name: '打开导航' }).click()
-  await expect(page.getByRole('option')).toHaveCount(13)
+  await expect(
+    page.getByRole('listbox', { name: '知识卡片搜索结果' }).getByRole('option'),
+  ).toHaveCount(13)
   await page.getByRole('button', { name: /前端知识内容包/ }).click()
   await expect(page.getByRole('button', { name: '已全部加入' })).toBeDisabled()
 })
