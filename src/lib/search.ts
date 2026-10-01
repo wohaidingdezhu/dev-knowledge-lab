@@ -9,6 +9,34 @@ export type SearchResult = {
 export type HighlightPart = { text: string; match: boolean }
 
 const SNIPPET_LENGTH = 150
+const emptySnippetCache = new WeakMap<
+  Card,
+  { body: string; html: string; css: string; js: string; snippet: string }
+>()
+
+function emptySnippet(card: Card): string {
+  const cached = emptySnippetCache.get(card)
+  if (
+    cached?.body === card.body &&
+    cached.html === card.html &&
+    cached.css === card.css &&
+    cached.js === card.js
+  )
+    return cached.snippet
+  const snippet = snippetAround(
+    plainMarkdown(card.body.slice(0, 500)) ||
+      [card.html, card.css, card.js].join('\n').slice(0, 500),
+    [],
+  )
+  emptySnippetCache.set(card, {
+    body: card.body,
+    html: card.html,
+    css: card.css,
+    js: card.js,
+    snippet,
+  })
+  return snippet
+}
 
 function tokensFor(query: string): string[] {
   return [...new Set(query.trim().toLowerCase().split(/\s+/u).filter(Boolean))]
@@ -59,11 +87,7 @@ export function searchCards(
       .map((card) => ({
         card,
         matchField: null,
-        snippet: snippetAround(
-          plainMarkdown(card.body.slice(0, 500)) ||
-            [card.html, card.css, card.js].join('\n').slice(0, 500),
-          [],
-        ),
+        snippet: emptySnippet(card),
       }))
   }
   const results: (SearchResult & { relevance: number[]; index: number })[] = []

@@ -201,6 +201,7 @@ function Tags({
         onChange={(event) => setValue(event.target.value)}
         onBlur={add}
         onKeyDown={(event) => {
+          if (event.nativeEvent.isComposing || event.keyCode === 229) return
           if (
             event.key === 'Enter' ||
             event.key === ',' ||
@@ -387,6 +388,18 @@ export default function App() {
     setCursor(0)
     setVisibleCount(100)
   }, [query, tag, collection])
+  useEffect(() => {
+    setCursor((value) => Math.min(value, Math.max(0, results.length - 1)))
+  }, [results.length])
+  useEffect(() => {
+    if (loading) return
+    setBatchIds((ids) => {
+      if (!ids.length) return ids
+      const existing = new Set(cards.map(({ id }) => id))
+      const remaining = ids.filter((id) => existing.has(id))
+      return remaining.length === ids.length ? ids : remaining
+    })
+  }, [cards, loading])
   useEffect(() => {
     const handle = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
@@ -1085,6 +1098,8 @@ export default function App() {
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 onKeyDown={(event) => {
+                  if (event.nativeEvent.isComposing || event.keyCode === 229)
+                    return
                   if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
                     event.preventDefault()
                     setCursor((value) => {
@@ -1244,6 +1259,7 @@ export default function App() {
               id="search-results"
               className="card-list"
               role="listbox"
+              aria-multiselectable={batchMode}
               aria-label="知识卡片搜索结果"
             >
               {loading ? (
@@ -1656,11 +1672,20 @@ export default function App() {
                     ? '正在整理你的片段…'
                     : '每个问题，都值得留一个答案。'}
                 </h2>
-                <p>从左侧选择卡片，或开始记录一个新的发现。</p>
+                <p>从列表选择卡片，或开始记录一个新的发现。</p>
                 {error && (
                   <p className="field-error" role="alert">
                     {error}
                   </p>
+                )}
+                {mobileDetail && (
+                  <button
+                    className="text-button"
+                    onClick={() => setMobileDetail(false)}
+                  >
+                    <ArrowLeft size={16} />
+                    返回卡片列表
+                  </button>
                 )}
                 <button
                   className="primary-button"
@@ -1668,7 +1693,7 @@ export default function App() {
                   disabled={loading || busy}
                 >
                   <Plus size={16} />
-                  新建第一张卡片
+                  {cards.length ? '新建卡片' : '新建第一张卡片'}
                 </button>
               </div>
             )}
@@ -1703,14 +1728,23 @@ export default function App() {
           <span>{notice || '卡片已删除'}</span>
           {deleted && (
             <button
+              disabled={busy}
               onClick={async () => {
+                if (busy) return
+                setBusy(true)
                 try {
+                  if (!(await flush())) {
+                    setNotice('当前修改尚未保存，请先解决保存问题再撤销删除。')
+                    return
+                  }
                   const restored = await restoreCard(deleted)
                   setDeleted(null)
                   setSelectedId(restored.id)
                   setNotice('卡片已恢复。')
                 } catch (cause) {
                   setNotice(errorText(cause))
+                } finally {
+                  setBusy(false)
                 }
               }}
             >
@@ -2408,10 +2442,20 @@ export default function App() {
                       onClick={async () => {
                         setBusy(true)
                         try {
+                          if (!(await flush())) {
+                            setModal(null)
+                            setSidebarOpen(false)
+                            setMobileDetail(true)
+                            setNotice(
+                              '当前修改尚未保存，请先解决保存问题再恢复卡片。',
+                            )
+                            return
+                          }
                           const restored = await restoreDeletedCard(entry.id)
                           await discard()
                           setDeleted(null)
                           setSelectedId(restored.id)
+                          setSidebarOpen(false)
                           setMobileDetail(true)
                           setModal(null)
                           setNotice('卡片已从回收站恢复。')

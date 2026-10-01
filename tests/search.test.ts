@@ -122,6 +122,16 @@ describe('searchCards', () => {
     expect(searchCards([record], 'unique-source', null)).toEqual([])
   })
 
+  it('refreshes a cached empty-query snippet when card content changes', () => {
+    const record = card('one', { body: '旧正文' })
+    expect(searchCards([record], '', null)[0].snippet).toBe('旧正文')
+    record.body = '新正文'
+    expect(searchCards([record], '', null)[0].snippet).toBe('新正文')
+    record.body = ''
+    record.js = 'console.log(1)'
+    expect(searchCards([record], '', null)[0].snippet).toBe('console.log(1)')
+  })
+
   it('searches regex punctuation literally and treats duplicate terms as one token', () => {
     const records = [
       card('one', { body: '调用 a+b [x] foo.bar?' }),

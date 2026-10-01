@@ -43,6 +43,23 @@ function measure(cards, query) {
   }
 }
 
+function measureEditing(cards) {
+  searchCards(cards, '', null)
+  const durations = []
+  for (let index = 0; index < repetitions; index++) {
+    const changed = cards.slice()
+    changed[0] = { ...cards[0], body: `${cards[0].body}${index}` }
+    const start = performance.now()
+    searchCards(changed, '', null)
+    durations.push(performance.now() - start)
+  }
+  durations.sort((left, right) => left - right)
+  return {
+    medianMs: Number(durations[Math.floor(durations.length / 2)].toFixed(2)),
+    p95Ms: Number(durations[Math.ceil(durations.length * 0.95) - 1].toFixed(2)),
+  }
+}
+
 console.log(
   JSON.stringify(
     {
@@ -76,6 +93,14 @@ for (const size of sizes) {
       memoryMiB,
       query: '',
       ...measure(cards, ''),
+    }),
+  )
+  console.log(
+    JSON.stringify({
+      cards: size,
+      memoryMiB,
+      scenario: 'edit-one-card-empty-query',
+      ...measureEditing(cards),
     }),
   )
 }
