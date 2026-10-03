@@ -472,6 +472,7 @@ test('long result lists load incrementally and code editor supports indent and u
   await expect(
     page.getByRole('listbox', { name: '知识卡片搜索结果' }).getByRole('option'),
   ).toHaveCount(104)
+  await page.locator('#result-pagination-0').click()
   await page.getByRole('button', { name: '代码实验室', exact: true }).click()
   const editor = page.getByRole('textbox', { name: 'HTML 代码' })
   await editor.fill('<div>hello</div>')

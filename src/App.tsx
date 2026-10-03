@@ -1,10 +1,12 @@
 import {
   useEffect,
   useId,
+  useImperativeHandle,
   useMemo,
   useRef,
   useState,
   type ReactNode,
+  type Ref,
 } from 'react'
 import {
   ArrowDown,
@@ -68,14 +70,27 @@ import {
   togglePin,
 } from './lib/db'
 import type { CardSelection } from './lib/db'
-import { createBackupFile, createDraftFile, validateSource } from './lib/backup'
+import {
+  BACKUP_LIMITS,
+  createBackupFile,
+  createDraftFile,
+  validateSource,
+} from './lib/backup'
 import { createFullBackupFile } from './lib/fullBackup'
 import { readAnyBackupFile } from './lib/portableBackup'
 import { createWorkspaceBackupFile } from './lib/workspaceBackup'
 
 import { makeKnowledgePackCards } from './lib/knowledgePack'
 import { searchCards } from './lib/search'
+import { summarizeCards } from './lib/cardSummary'
 import { useKnowledge } from './lib/useKnowledge'
+import {
+  readViewPreferences,
+  writeViewPreferences,
+  rememberedLanguage,
+  rememberLanguage,
+  type SortMode,
+} from './lib/viewPreferences'
 import { useRegisterSW } from 'virtual:pwa-register/react'
 import type {
   Card,
@@ -163,56 +178,116 @@ function Dialog({
   )
 }
 
+type TagsHandle = {
+  commit: () => boolean
+  focus: () => void
+  reset: () => void
+}
 function Tags({
   tags,
   onChange,
+  ref,
 }: {
   tags: string[]
   onChange: (tags: string[]) => void
+  ref: Ref<TagsHandle>
 }) {
   const [value, setValue] = useState('')
+  const [error, setError] = useState('')
+  const errorId = useId()
+  const inputRef = useRef<HTMLInputElement>(null)
   const add = () => {
     const additions = value
       .split(/[,，\n]/)
       .map((tag) => tag.trim())
       .filter(Boolean)
-    if (additions.length)
-      onChange([...new Set([...tags, ...additions])].slice(0, 24))
+    if (additions.some((tag) => tag.length > BACKUP_LIMITS.tag)) {
+      setError(`单个标签最多 ${BACKUP_LIMITS.tag} 个字符，请缩短后添加。`)
+      return false
+    }
+    const next = [...new Set([...tags, ...additions])]
+    if (next.length > BACKUP_LIMITS.tags) {
+      setError(
+        `每张卡片最多 ${BACKUP_LIMITS.tags} 个标签，请先移除一些标签再添加。`,
+      )
+      return false
+    }
+    if (next.length > tags.length) onChange(next)
     setValue('')
+    setError('')
+    return true
   }
+  useImperativeHandle(ref, () => ({
+    commit: add,
+    focus: () => inputRef.current?.focus(),
+    reset: () => {
+      setValue('')
+      setError('')
+    },
+  }))
+  const pending = Boolean(value.trim())
+  useEffect(() => {
+    if (!pending) return
+    const protect = (event: BeforeUnloadEvent) => {
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', protect)
+    return () => window.removeEventListener('beforeunload', protect)
+  }, [pending])
   return (
-    <div className="tags-editor">
-      {tags.map((tag) => (
-        <span className="tag editable-tag" key={tag}>
-          {tag}
-          <button
-            aria-label={`移除标签 ${tag}`}
-            onClick={() => onChange(tags.filter((item) => item !== tag))}
-          >
-            <X size={11} />
-          </button>
-        </span>
-      ))}
-      <input
-        aria-label="添加标签"
-        placeholder="+ 添加标签"
-        value={value}
-        maxLength={48}
-        onChange={(event) => setValue(event.target.value)}
-        onBlur={add}
-        onKeyDown={(event) => {
-          if (event.nativeEvent.isComposing || event.keyCode === 229) return
-          if (
-            event.key === 'Enter' ||
-            event.key === ',' ||
-            event.key === '，'
-          ) {
-            event.preventDefault()
-            add()
-          }
-        }}
-      />
-    </div>
+    <>
+      <div className="tags-editor">
+        {tags.map((tag) => (
+          <span className="tag editable-tag" key={tag}>
+            {tag}
+            <button
+              aria-label={`移除标签 ${tag}`}
+              onClick={() => {
+                onChange(tags.filter((item) => item !== tag))
+                setError('')
+              }}
+            >
+              <X size={11} />
+            </button>
+          </span>
+        ))}
+        <input
+          ref={inputRef}
+          aria-label="添加标签"
+          aria-invalid={Boolean(error)}
+          aria-describedby={error ? errorId : undefined}
+          placeholder="+ 添加标签"
+          value={value}
+          onChange={(event) => {
+            setValue(event.target.value)
+            setError('')
+          }}
+          onBlur={add}
+          onKeyDown={(event) => {
+            if (event.nativeEvent.isComposing || event.keyCode === 229) return
+            if (event.key === 'Escape') {
+              setValue('')
+              setError('')
+              return
+            }
+            if (
+              event.key === 'Enter' ||
+              event.key === ',' ||
+              event.key === '，'
+            ) {
+              event.preventDefault()
+              add()
+            }
+          }}
+        />
+      </div>
+      {error && (
+        <p className="field-error" id={errorId} role="alert">
+          {error}
+        </p>
+      )}
+    </>
   )
 }
 
@@ -224,7 +299,7 @@ export default function App() {
     error,
     status,
     update,
-    flush,
+    flush: saveChanges,
     discard,
     workspaceGeneration,
   } = useKnowledge()
@@ -233,7 +308,14 @@ export default function App() {
     offlineReady: [offlineReady, setOfflineReady],
     updateServiceWorker,
   } = useRegisterSW()
-  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [initialPreferences] = useState(() => readViewPreferences(demoMode))
+  const [selectedId, setSelectedId] = useState<string | null>(
+    initialPreferences.selectedId,
+  )
+  const [codeLanguages, setCodeLanguages] = useState(
+    initialPreferences.languages,
+  )
+  const preferencesRestored = useRef(false)
   const [query, setQuery] = useState('')
   const [tag, setTag] = useState<string | null>(null)
   const [collection, setCollection] = useState<'all' | 'code'>('all')
@@ -281,14 +363,20 @@ export default function App() {
   const [deleted, setDeleted] = useState<Card | null>(null)
   const [cursor, setCursor] = useState(0)
   const [visibleCount, setVisibleCount] = useState(100)
-  const [sortMode, setSortMode] = useState<
-    'updated-desc' | 'updated-asc' | 'created-desc' | 'title'
-  >('updated-desc')
+  const [sortMode, setSortMode] = useState<SortMode>(
+    initialPreferences.sortMode,
+  )
   const [batchMode, setBatchMode] = useState(false)
-  const [batchIds, setBatchIds] = useState<string[]>([])
+  const [batchSelection, setBatchSelection] = useState<
+    (CardSelection & { generation: string })[]
+  >([])
   const [batchAction, setBatchAction] = useState<'add' | 'remove'>('add')
   const [batchTagValue, setBatchTagValue] = useState('')
-  const batchIdSet = useMemo(() => new Set(batchIds), [batchIds])
+  const [batchError, setBatchError] = useState('')
+  const batchIdSet = useMemo(
+    () => new Set(batchSelection.map(({ id }) => id)),
+    [batchSelection],
+  )
   const [pinnedIds, setPinnedIds] = useState<string[]>([])
   const [tagFrom, setTagFrom] = useState('')
   const [tagTo, setTagTo] = useState('')
@@ -307,9 +395,14 @@ export default function App() {
   const knowledgePack = useMemo(() => makeKnowledgePackCards(), [])
   const searchRef = useRef<HTMLInputElement>(null)
   const titleRef = useRef<HTMLInputElement>(null)
+  const tagsRef = useRef<TagsHandle>(null)
+  const { tags, tagCounts, codeCards } = useMemo(
+    () => summarizeCards(cards),
+    [cards],
+  )
   const results = useMemo(() => {
     const matches = searchCards(
-      collection === 'code' ? cards.filter(hasCode) : cards,
+      collection === 'code' ? codeCards : cards,
       query,
       tag,
     )
@@ -325,18 +418,11 @@ export default function App() {
       const direction = sortMode === 'updated-asc' ? 1 : -1
       return direction * left.card[field].localeCompare(right.card[field])
     })
-  }, [cards, query, tag, collection, pinnedIds, sortMode])
+  }, [cards, codeCards, query, tag, collection, pinnedIds, sortMode])
   const selected = cards.find((card) => card.id === selectedId)
   const batchCards = cards.filter((card) => batchIdSet.has(card.id))
   const batchTags = [...new Set(batchCards.flatMap((card) => card.tags))].sort(
     (left, right) => left.localeCompare(right, 'zh-CN'),
-  )
-  const tags = useMemo(
-    () =>
-      [...new Set(cards.flatMap((card) => card.tags))].sort((a, b) =>
-        a.localeCompare(b),
-      ),
-    [cards],
   )
   const importConflicts =
     imported?.filter((card) => Object.hasOwn(importExisting, card.id)) ?? []
@@ -381,23 +467,40 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (!loading && !selectedId && cards.length)
+    if (loading) return
+    const restoring = !preferencesRestored.current
+    preferencesRestored.current = true
+    if (
+      cards.length &&
+      (!selectedId || (restoring && !cards.some(({ id }) => id === selectedId)))
+    )
       setSelectedId(searchCards(cards, '', null)[0].card.id)
   }, [cards, loading, selectedId])
+  useEffect(() => {
+    if (!loading)
+      writeViewPreferences(demoMode, {
+        selectedId: selected?.id ?? null,
+        sortMode,
+        languages: codeLanguages,
+      })
+  }, [loading, selected?.id, sortMode, codeLanguages])
   useEffect(() => {
     setCursor(0)
     setVisibleCount(100)
   }, [query, tag, collection])
   useEffect(() => {
+    setBatchError('')
+  }, [modal])
+  useEffect(() => {
     setCursor((value) => Math.min(value, Math.max(0, results.length - 1)))
   }, [results.length])
   useEffect(() => {
     if (loading) return
-    setBatchIds((ids) => {
-      if (!ids.length) return ids
+    setBatchSelection((selection) => {
+      if (!selection.length) return selection
       const existing = new Set(cards.map(({ id }) => id))
-      const remaining = ids.filter((id) => existing.has(id))
-      return remaining.length === ids.length ? ids : remaining
+      const remaining = selection.filter(({ id }) => existing.has(id))
+      return remaining.length === selection.length ? selection : remaining
     })
   }, [cards, loading])
   useEffect(() => {
@@ -421,6 +524,18 @@ export default function App() {
     }
   }, [notice])
 
+  const commitPendingTags = () => {
+    if (tagsRef.current?.commit() !== false) return true
+    setModal(null)
+    setSidebarOpen(false)
+    setMobileDetail(true)
+    setNotice(
+      '待添加的标签还需要修正；请修正后添加，或按 Esc 清空，再继续操作。',
+    )
+    requestAnimationFrame(() => tagsRef.current?.focus())
+    return false
+  }
+  const flush = async () => commitPendingTags() && (await saveChanges())
   const select = async (card: Card) => {
     if (!(await flush())) return
     setSelectedId(card.id)
@@ -494,6 +609,7 @@ export default function App() {
   }
   const exportBackup = async () => {
     if (busy || backupInFlight.current) return
+    if (!commitPendingTags()) return
     backupInFlight.current = true
     setBusy(true)
     try {
@@ -590,44 +706,69 @@ export default function App() {
     }
   }
   const toggleBatchCard = (id: string) => {
-    setBatchIds((ids) => {
-      if (ids.includes(id)) return ids.filter((item) => item !== id)
-      if (ids.length >= 5000) {
+    const card = cardsRef.current.find((item) => item.id === id)
+    if (!card) return
+    const baseline = {
+      id,
+      revision: card.revision,
+      generation: workspaceGeneration(),
+    }
+    setBatchSelection((selection) => {
+      if (selection.some((item) => item.id === id))
+        return selection.filter((item) => item.id !== id)
+      if (selection.length >= 5000) {
         setNotice('一次最多整理 5000 张卡片。')
-        return ids
+        return selection
       }
-      return [...ids, id]
+      return [...selection, baseline]
     })
   }
-  const currentBatch = (): { cards: Card[]; selection: CardSelection[] } => {
+  const currentBatch = (): {
+    cards: Card[]
+    selection: CardSelection[]
+    generation: string
+  } => {
     const byId = new Map(cardsRef.current.map((card) => [card.id, card]))
-    const chosen = batchIds.map((id) => byId.get(id))
+    const chosen = batchSelection.map(({ id }) => byId.get(id))
     if (!chosen.length || chosen.some((card) => !card))
       throw new Error('选择的卡片已变化，请重新选择。')
+    const generation = batchSelection[0].generation
+    if (
+      generation !== workspaceGeneration() ||
+      batchSelection.some((entry) => entry.generation !== generation)
+    )
+      throw new Error('工作区已恢复或重置，请清空选择后重新选择卡片。')
+    if (
+      chosen.some(
+        (card, index) => card!.revision !== batchSelection[index].revision,
+      )
+    )
+      throw new Error('选中的卡片已发生修改，请清空选择后重新选择。')
     const current = chosen as Card[]
     return {
       cards: current,
-      selection: current.map(({ id, revision }) => ({ id, revision })),
+      selection: batchSelection.map(({ id, revision }) => ({ id, revision })),
+      generation,
     }
   }
   const applyBatchTag = async () => {
     if (!(await flush())) return
     setBusy(true)
     try {
-      const { selection } = currentBatch()
+      const { selection, generation } = currentBatch()
       const count = await batchTag(
         selection,
         batchAction,
         batchTagValue,
-        workspaceGeneration(),
+        generation,
       )
-      setBatchIds([])
+      setBatchSelection([])
       setModal(null)
       setNotice(
         `已为 ${count} 张卡片${batchAction === 'add' ? '添加' : '移除'}标签。`,
       )
     } catch (cause) {
-      setNotice(errorText(cause))
+      setBatchError(errorText(cause))
     } finally {
       setBusy(false)
     }
@@ -636,9 +777,9 @@ export default function App() {
     if (!(await flush())) return
     setBusy(true)
     try {
-      const { selection } = currentBatch()
-      const count = await batchPin(selection, pin, workspaceGeneration())
-      setBatchIds([])
+      const { selection, generation } = currentBatch()
+      const count = await batchPin(selection, pin, generation)
+      setBatchSelection([])
       setNotice(`已${pin ? '置顶' : '取消置顶'} ${count} 张卡片。`)
     } catch (cause) {
       setNotice(errorText(cause))
@@ -650,9 +791,9 @@ export default function App() {
     if (!(await flush())) return
     setBusy(true)
     try {
-      const { selection } = currentBatch()
-      const count = await batchDelete(selection, workspaceGeneration())
-      setBatchIds([])
+      const { selection, generation } = currentBatch()
+      const count = await batchDelete(selection, generation)
+      setBatchSelection([])
       setBatchMode(false)
       setDeleted(null)
       setSelectedId(null)
@@ -660,7 +801,7 @@ export default function App() {
       setMobileDetail(false)
       setNotice(`已将 ${count} 张卡片移入回收站，可逐张恢复。`)
     } catch (cause) {
-      setNotice(errorText(cause))
+      setBatchError(errorText(cause))
     } finally {
       setBusy(false)
     }
@@ -713,7 +854,7 @@ export default function App() {
       setDeleted(null)
       setImported(null)
       setBatchMode(false)
-      setBatchIds([])
+      setBatchSelection([])
       setLastBackup(fullImport.exportedAt)
       setFullImport(null)
       setFullImportBaseline(null)
@@ -807,11 +948,11 @@ export default function App() {
     }
   }
   const recoverCopy = async () => {
-    if (!selected) return
+    if (!selected || !commitPendingTags()) return
     setBusy(true)
     try {
       const copy = {
-        ...selected,
+        ...cardsRef.current.find(({ id }) => id === selected.id)!,
         id: crypto.randomUUID(),
         title: `${(selected.title || '未命名卡片').slice(0, 194)}（恢复副本）`,
       }
@@ -901,7 +1042,7 @@ export default function App() {
           >
             <Code2 size={17} />
             <span>代码实验</span>
-            <span className="nav-count">{cards.filter(hasCode).length}</span>
+            <span className="nav-count">{codeCards.length}</span>
           </button>
         </nav>
         <div className="nav-caption tags-caption">
@@ -933,9 +1074,7 @@ export default function App() {
             >
               <Hash size={15} />
               <span>{item}</span>
-              <span className="nav-count">
-                {cards.filter((card) => card.tags.includes(item)).length}
-              </span>
+              <span className="nav-count">{tagCounts.get(item)}</span>
             </button>
           ))}
           {!tags.length && (
@@ -1173,7 +1312,7 @@ export default function App() {
                   className="text-button"
                   onClick={() => {
                     setBatchMode((value) => !value)
-                    setBatchIds([])
+                    setBatchSelection([])
                   }}
                 >
                   {batchMode ? '完成整理' : '批量整理'}
@@ -1190,17 +1329,25 @@ export default function App() {
                     onClick={() => {
                       const visible = results
                         .slice(0, visibleCount)
-                        .map(({ card }) => card.id)
-                      setBatchIds((ids) =>
-                        [...new Set([...ids, ...visible])].slice(0, 5000),
-                      )
+                        .map(({ card }) => ({
+                          id: card.id,
+                          revision: card.revision,
+                          generation: workspaceGeneration(),
+                        }))
+                      setBatchSelection((selection) => {
+                        const existing = new Set(selection.map(({ id }) => id))
+                        return [
+                          ...selection,
+                          ...visible.filter(({ id }) => !existing.has(id)),
+                        ].slice(0, 5000)
+                      })
                     }}
                     disabled={!results.length || busy}
                   >
                     选中当前显示
                   </button>
                   <button
-                    onClick={() => setBatchIds([])}
+                    onClick={() => setBatchSelection([])}
                     disabled={!batchCards.length || busy}
                   >
                     清空选择
@@ -1539,6 +1686,7 @@ export default function App() {
                     />
                     <Tags
                       key={selected.id}
+                      ref={tagsRef}
                       tags={selected.tags}
                       onChange={(value) => update(selected.id, { tags: value })}
                     />
@@ -1570,6 +1718,7 @@ export default function App() {
                       {editing ? (
                         <>
                           <SourceEditor
+                            key={selected.id}
                             className="markdown-editor"
                             maxLength={500000}
                             language="markdown"
@@ -1647,6 +1796,15 @@ export default function App() {
                     <CodeLab
                       key={selected.id}
                       card={selected}
+                      initialLanguage={rememberedLanguage(
+                        codeLanguages,
+                        selected.id,
+                      )}
+                      onLanguageChange={(language) =>
+                        setCodeLanguages((current) =>
+                          rememberLanguage(current, selected.id, language),
+                        )
+                      }
                       onChange={(patch) => update(selected.id, patch)}
                     />
                   )}
@@ -1798,6 +1956,7 @@ export default function App() {
               onClick={async () => {
                 try {
                   await discard()
+                  tagsRef.current?.reset()
                   setModal(null)
                 } catch (cause) {
                   setNotice(errorText(cause))
@@ -1918,6 +2077,11 @@ export default function App() {
               </label>
             )}
           </div>
+          {batchError && (
+            <p className="field-error" role="alert">
+              {batchError}
+            </p>
+          )}
           <div className="dialog-actions">
             <button className="secondary-button" onClick={() => setModal(null)}>
               取消
@@ -1938,6 +2102,11 @@ export default function App() {
           description="会同时移除这些卡片的置顶状态；卡片和历史版本仍可从回收站逐张恢复。若有卡片在其他页面发生变化，本次操作会整体停止。"
           onClose={() => setModal(null)}
         >
+          {batchError && (
+            <p className="field-error" role="alert">
+              {batchError}
+            </p>
+          )}
           <div className="dialog-actions">
             <button className="secondary-button" onClick={() => setModal(null)}>
               取消

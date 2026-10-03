@@ -15,6 +15,7 @@ import {
   TriangleAlert,
 } from 'lucide-react'
 import type { Card } from '../lib/types'
+import type { CodeLanguage } from '../lib/viewPreferences'
 import { SourceEditor } from './LazySourceEditor'
 import {
   buildSandboxDocument,
@@ -27,9 +28,11 @@ interface CodeLabProps {
   card: Card
   onChange: (patch: Partial<Card>) => void
   disabled?: boolean
+  initialLanguage?: CodeLanguage
+  onLanguageChange?: (language: CodeLanguage) => void
 }
 
-type Language = 'html' | 'css' | 'js'
+type Language = CodeLanguage
 type PreviewEntry = {
   level: 'log' | 'info' | 'warn' | 'error' | 'debug'
   text: string
@@ -46,8 +49,17 @@ const languages: { id: Language; label: string; filename: string }[] = [
   { id: 'js', label: 'JavaScript', filename: 'script.js' },
 ]
 
-export function CodeLab({ card, onChange, disabled = false }: CodeLabProps) {
-  const [language, setLanguage] = useState<Language>('html')
+export function CodeLab({
+  card,
+  onChange,
+  disabled = false,
+  initialLanguage = 'html',
+  onLanguageChange,
+}: CodeLabProps) {
+  const [language, setLanguage] = useState<Language>(initialLanguage)
+  const [visitedLanguages, setVisitedLanguages] = useState<Language[]>([
+    initialLanguage,
+  ])
   const [run, setRun] = useState<PreviewRun | null>(null)
   const [entries, setEntries] = useState<PreviewEntry[]>([])
   const [ready, setReady] = useState(false)
@@ -125,6 +137,14 @@ export function CodeLab({ card, onChange, disabled = false }: CodeLabProps) {
     setLimited(false)
   }
 
+  function selectLanguage(next: Language) {
+    setVisitedLanguages((previous) =>
+      previous.includes(next) ? previous : [...previous, next],
+    )
+    setLanguage(next)
+    onLanguageChange?.(next)
+  }
+
   function handleTabKey(
     event: KeyboardEvent<HTMLButtonElement>,
     current: number,
@@ -140,7 +160,7 @@ export function CodeLab({ card, onChange, disabled = false }: CodeLabProps) {
               (event.key === 'ArrowRight' ? 1 : -1) +
               languages.length) %
             languages.length
-    setLanguage(languages[next].id)
+    selectLanguage(languages[next].id)
     document.getElementById(`${editorId}-tab-${languages[next].id}`)?.focus()
   }
 
@@ -194,10 +214,10 @@ export function CodeLab({ card, onChange, disabled = false }: CodeLabProps) {
                   id={`${editorId}-tab-${item.id}`}
                   role="tab"
                   aria-selected={language === item.id}
-                  aria-controls={`${editorId}-editor`}
+                  aria-controls={`${editorId}-editor-${item.id}`}
                   tabIndex={language === item.id ? 0 : -1}
                   className={`lab-tab ${language === item.id ? 'is-active' : ''}`}
-                  onClick={() => setLanguage(item.id)}
+                  onClick={() => selectLanguage(item.id)}
                   onKeyDown={(event) => handleTabKey(event, index)}
                 >
                   {item.label}
@@ -206,24 +226,30 @@ export function CodeLab({ card, onChange, disabled = false }: CodeLabProps) {
             </div>
             <span className="lab-filename">{activeFile.filename}</span>
           </div>
-          <div
-            className="lab-code-editor"
-            role="tabpanel"
-            id={`${editorId}-editor`}
-            aria-labelledby={`${editorId}-tab-${language}`}
-          >
-            <SourceEditor
-              key={language}
-              className="lab-source-editor"
-              language={language}
-              label={`${activeFile.label} 代码`}
-              maxLength={250000}
-              value={card[language]}
-              onChange={(value) => onChange({ [language]: value })}
-              onRun={runExample}
-              disabled={disabled}
-            />
-          </div>
+          {languages.map((item) => (
+            <div
+              key={`${card.id}-${item.id}`}
+              className="lab-code-editor"
+              role="tabpanel"
+              id={`${editorId}-editor-${item.id}`}
+              aria-labelledby={`${editorId}-tab-${item.id}`}
+              hidden={language !== item.id}
+            >
+              {visitedLanguages.includes(item.id) && (
+                <SourceEditor
+                  className="lab-source-editor"
+                  language={item.id}
+                  label={`${item.label} 代码`}
+                  maxLength={250000}
+                  value={card[item.id]}
+                  onChange={(value) => onChange({ [item.id]: value })}
+                  onRun={runExample}
+                  disabled={disabled}
+                  active={language === item.id}
+                />
+              )}
+            </div>
+          ))}
           <div className="lab-editor-footer">
             <span>原生浏览器代码</span>
             <kbd>⌘ / Ctrl ↵ 运行</kbd>
