@@ -882,6 +882,25 @@ kbd {
 .title-input::placeholder {
   color: #c3bfcc;
 }
+.note-tag-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px 12px;
+}
+.note-tags {
+  flex: 1 1 180px;
+  min-width: 0;
+}
+.card-export-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--accent);
+}
 .tags-editor {
   display: flex;
   flex-wrap: wrap;

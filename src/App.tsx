@@ -83,6 +83,7 @@ import { createWorkspaceBackupFile } from './lib/workspaceBackup'
 import { makeKnowledgePackCards } from './lib/knowledgePack'
 import { searchCards } from './lib/search'
 import { summarizeCards } from './lib/cardSummary'
+import { createCardExport, type CardExportFormat } from './lib/cardExport'
 import { useKnowledge } from './lib/useKnowledge'
 import {
   readViewPreferences,
@@ -338,6 +339,7 @@ export default function App() {
     | 'restore-full'
     | 'batch-tag'
     | 'batch-delete'
+    | 'card-export'
     | null
   >(null)
   const [imported, setImported] = useState<Card[] | null>(null)
@@ -396,6 +398,7 @@ export default function App() {
   const searchRef = useRef<HTMLInputElement>(null)
   const titleRef = useRef<HTMLInputElement>(null)
   const tagsRef = useRef<TagsHandle>(null)
+  const cardExportInFlight = useRef(false)
   const { tags, tagCounts, codeCards } = useMemo(
     () => summarizeCards(cards),
     [cards],
@@ -693,6 +696,37 @@ export default function App() {
     } catch (cause) {
       setNotice(errorText(cause))
     } finally {
+      setBusy(false)
+    }
+  }
+  const exportSelected = async (format: CardExportFormat) => {
+    if (busy || cardExportInFlight.current || !selected) return
+    if (!commitPendingTags()) return
+    const current = cardsRef.current.find(({ id }) => id === selected.id)
+    if (!current) {
+      setModal(null)
+      setNotice('这张卡片已变化，请重新选择后导出。')
+      return
+    }
+    const snapshot = structuredClone(current)
+    cardExportInFlight.current = true
+    setBusy(true)
+    try {
+      const file = await createCardExport(snapshot, format)
+      const url = URL.createObjectURL(file.data)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = file.filename
+      anchor.click()
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+      setModal(null)
+      setNotice(
+        '已导出此卡片当前内容。单卡导出不包含历史或回收站，请另外保留完整归档。',
+      )
+    } catch (cause) {
+      setNotice(errorText(cause))
+    } finally {
+      cardExportInFlight.current = false
       setBusy(false)
     }
   }
@@ -1684,12 +1718,29 @@ export default function App() {
                         update(selected.id, { title: event.target.value })
                       }
                     />
-                    <Tags
-                      key={selected.id}
-                      ref={tagsRef}
-                      tags={selected.tags}
-                      onChange={(value) => update(selected.id, { tags: value })}
-                    />
+                    <div className="note-tag-row">
+                      <div className="note-tags">
+                        <Tags
+                          key={selected.id}
+                          ref={tagsRef}
+                          tags={selected.tags}
+                          onChange={(value) =>
+                            update(selected.id, { tags: value })
+                          }
+                        />
+                      </div>
+                      <button
+                        className="text-button card-export-button"
+                        onPointerDown={(event) => {
+                          // Commit pending tags after the click; blur can otherwise move this button.
+                          event.preventDefault()
+                        }}
+                        onClick={() => setModal('card-export')}
+                        disabled={busy}
+                      >
+                        <Download size={13} /> 导出此卡片
+                      </button>
+                    </div>
                   </div>
                   {tab === 'note' ? (
                     <div className="note-content">
@@ -2513,6 +2564,43 @@ export default function App() {
               onClick={() => void applyFullRestore()}
             >
               确认替换并恢复
+            </button>
+          </div>
+        </Dialog>
+      )}
+      {modal === 'card-export' && selected && (
+        <Dialog
+          title="导出此卡片"
+          description="下载当前笔记或源码，也可带走尚未保存的草稿。此导出不包含历史、回收站或置顶状态；完整备份请使用“导入与备份”。"
+          onClose={() => setModal(null)}
+        >
+          <div className="compat-backup-section">
+            <div>
+              <strong>Markdown 笔记</strong>
+              <p>包含标题、正文、标签与来源，适合在其他笔记工具中阅读。</p>
+            </div>
+            <button
+              className="secondary-button"
+              onClick={() => void exportSelected('markdown')}
+              disabled={busy}
+            >
+              导出 Markdown
+            </button>
+          </div>
+          <div className="compat-backup-section">
+            <div>
+              <strong>源码 ZIP</strong>
+              <p>
+                包含笔记和 HTML、CSS、JavaScript
+                原文件，保留空文件与原始换行，不会自动运行或拼接源码。
+              </p>
+            </div>
+            <button
+              className="secondary-button"
+              onClick={() => void exportSelected('source')}
+              disabled={busy}
+            >
+              导出源码 ZIP
             </button>
           </div>
         </Dialog>

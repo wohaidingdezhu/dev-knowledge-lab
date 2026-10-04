@@ -3,12 +3,18 @@ import { expect, test, type Page } from '@playwright/test'
 async function prepareRecovery(page: Page) {
   await page.goto('/')
   await page.getByRole('button', { name: '新建知识卡片' }).click()
+  await expect(page.getByRole('textbox', { name: '卡片标题' })).toHaveValue(
+    '未命名卡片',
+  )
   await page.getByRole('textbox', { name: '卡片标题' }).fill('等待恢复的卡片')
   await expect(page.locator('.save-status')).toHaveText('已保存')
   await page.getByRole('button', { name: '删除当前卡片' }).click()
   await page.getByRole('button', { name: '确认删除' }).click()
   await expect(page.getByRole('dialog')).toHaveCount(0)
   await page.getByRole('button', { name: '新建知识卡片' }).click()
+  await expect(page.getByRole('textbox', { name: '卡片标题' })).toHaveValue(
+    '未命名卡片',
+  )
   await page
     .getByRole('textbox', { name: '卡片标题' })
     .fill('需要保留的当前草稿')
