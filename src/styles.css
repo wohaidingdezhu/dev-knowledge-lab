@@ -1212,7 +1212,7 @@ kbd {
 }
 .detail-empty p {
   font-size: 12px;
-  color: #a29aaa;
+  color: #625f70;
   margin: 4px 0 28px;
 }
 .primary-button,
@@ -1249,7 +1249,7 @@ kbd {
 .field-error {
   font-size: 11px;
   line-height: 1.7;
-  color: #b4676f;
+  color: #923f4b;
 }
 .error-banner {
   padding: 12px 22px;
@@ -1618,6 +1618,15 @@ kbd {
   min-width: 150px;
   margin: 0;
 }
+.recovery-actions .secondary-button,
+.recovery-toolbar .secondary-button {
+  color: #62566f;
+}
+.recovery-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
 .restore-comparison {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1652,6 +1661,54 @@ kbd {
 .recovery-list {
   max-height: 65dvh;
   overflow-y: auto;
+}
+.restore-comparison pre:focus-visible,
+.recovery-preview:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.card-comparison {
+  min-width: 0;
+  margin-top: 16px;
+}
+.card-comparison h3 {
+  margin: 0;
+  font-size: 12px;
+}
+.comparison-hint {
+  margin: 8px 0 14px;
+  font-size: 11px;
+  line-height: 1.7;
+}
+.comparison-field h4 {
+  margin: 14px 0 0;
+  font-size: 12px;
+}
+.comparison-tags p {
+  margin: 7px 0 0;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+.comparison-field .restore-comparison pre {
+  margin: 8px 0;
+  max-height: 180px;
+}
+.comparison-before {
+  background: #f9dddd;
+  color: #812f36;
+}
+.comparison-after {
+  background: #d9efdf;
+  color: #245f37;
+}
+.comparison-full {
+  margin-top: 14px;
+  font-size: 11px;
+}
+.comparison-full summary {
+  cursor: pointer;
+  padding: 7px 0;
+  color: var(--accent);
 }
 .recovery-item > .primary-button {
   margin-top: 10px;
@@ -2226,7 +2283,7 @@ kbd {
   .sidebar-backdrop {
     display: block;
     position: fixed;
-    inset: 0;
+    inset: 0 0 0 215px;
     z-index: 45;
     background: #27213945;
     backdrop-filter: blur(2px);

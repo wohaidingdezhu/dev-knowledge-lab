@@ -83,6 +83,7 @@ import { createWorkspaceBackupFile } from './lib/workspaceBackup'
 import { makeKnowledgePackCards } from './lib/knowledgePack'
 import { searchCards } from './lib/search'
 import { summarizeCards } from './lib/cardSummary'
+import { cardContents } from './lib/cardComparison'
 import { createCardExport, type CardExportFormat } from './lib/cardExport'
 import { useKnowledge } from './lib/useKnowledge'
 import {
@@ -103,6 +104,7 @@ import type {
   WorkspaceData,
 } from './lib/types'
 import { CodeLab } from './components/CodeLab'
+import { CardComparison } from './components/CardComparison'
 import { SourceEditor } from './components/LazySourceEditor'
 import { Highlight, Markdown } from './components/Markdown'
 
@@ -119,8 +121,26 @@ const dateTime = (value: string) => new Date(value).toLocaleString('zh-CN')
 const storageSize = (value?: number) =>
   value === undefined ? '未知' : `${(value / 1024 / 1024).toFixed(1)} MiB`
 
-const cardContents = (card: Card) =>
-  `标题：${card.title}\n标签：${card.tags.join('、') || '无'}\n来源：${card.source || '无'}\n\n正文：\n${card.body}\n\nHTML：\n${card.html}\n\nCSS：\n${card.css}\n\nJavaScript：\n${card.js}`
+type ListCursor = { id: string | null; index: number; scope: string }
+const resolveListCursor = (
+  ids: string[],
+  current: ListCursor,
+  scope: string,
+) => {
+  if (current.scope !== scope) return 0
+  const index = current.id === null ? -1 : ids.indexOf(current.id)
+  return Math.max(
+    0,
+    Math.min(ids.length - 1, index < 0 ? current.index : index),
+  )
+}
+
+const sortNames: Record<SortMode, string> = {
+  'updated-desc': '最近更新',
+  'updated-asc': '最早更新',
+  'created-desc': '最近创建',
+  title: '按标题',
+}
 
 function Dialog({
   title,
@@ -359,11 +379,19 @@ export default function App() {
   const [deletedEntries, setDeletedEntries] = useState<DeletedCard[]>([])
   const [pendingPurge, setPendingPurge] = useState<DeletedCard | null>(null)
   const [historyPreviewId, setHistoryPreviewId] = useState<string | null>(null)
+  const [historyError, setHistoryError] = useState('')
+  const [trashPreviewId, setTrashPreviewId] = useState<string | null>(null)
+  const [trashError, setTrashError] = useState('')
   const [busy, setBusy] = useState(false)
   const backupInFlight = useRef(false)
   const [notice, setNotice] = useState('')
   const [deleted, setDeleted] = useState<Card | null>(null)
-  const [cursor, setCursor] = useState(0)
+  const [listCursor, setListCursor] = useState<ListCursor>({
+    id: null,
+    index: 0,
+    scope: '',
+  })
+  const [searchFocused, setSearchFocused] = useState(false)
   const [visibleCount, setVisibleCount] = useState(100)
   const [sortMode, setSortMode] = useState<SortMode>(
     initialPreferences.sortMode,
@@ -396,6 +424,7 @@ export default function App() {
   } | null>(null)
   const knowledgePack = useMemo(() => makeKnowledgePackCards(), [])
   const searchRef = useRef<HTMLInputElement>(null)
+  const listRef = useRef<HTMLDivElement>(null)
   const titleRef = useRef<HTMLInputElement>(null)
   const tagsRef = useRef<TagsHandle>(null)
   const cardExportInFlight = useRef(false)
@@ -422,6 +451,14 @@ export default function App() {
       return direction * left.card[field].localeCompare(right.card[field])
     })
   }, [cards, codeCards, query, tag, collection, pinnedIds, sortMode])
+  const resultIds = useMemo(() => results.map(({ card }) => card.id), [results])
+  const cursorScope = JSON.stringify([query, tag, collection])
+  const cursor = resolveListCursor(resultIds, listCursor, cursorScope)
+  const activeResultId = resultIds[cursor]
+  const renderedCount = Math.max(visibleCount, cursor + 1)
+  const rememberCursor = (index: number) => {
+    setListCursor({ id: resultIds[index] ?? null, index, scope: cursorScope })
+  }
   const selected = cards.find((card) => card.id === selectedId)
   const batchCards = cards.filter((card) => batchIdSet.has(card.id))
   const batchTags = [...new Set(batchCards.flatMap((card) => card.tags))].sort(
@@ -488,15 +525,35 @@ export default function App() {
       })
   }, [loading, selected?.id, sortMode, codeLanguages])
   useEffect(() => {
-    setCursor(0)
     setVisibleCount(100)
   }, [query, tag, collection])
   useEffect(() => {
     setBatchError('')
   }, [modal])
   useEffect(() => {
-    setCursor((value) => Math.min(value, Math.max(0, results.length - 1)))
-  }, [results.length])
+    setListCursor((current) => {
+      const index = resolveListCursor(resultIds, current, cursorScope)
+      const id = resultIds[index] ?? null
+      return current.id === id &&
+        current.index === index &&
+        current.scope === cursorScope
+        ? current
+        : { id, index, scope: cursorScope }
+    })
+  }, [resultIds, cursorScope])
+  useEffect(() => {
+    setVisibleCount(renderedCount)
+  }, [renderedCount])
+  useEffect(() => {
+    if (
+      searchFocused &&
+      document.activeElement === searchRef.current &&
+      activeResultId
+    )
+      listRef.current?.children
+        .item(cursor)
+        ?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  }, [activeResultId, cursor, renderedCount, resultIds, searchFocused])
   useEffect(() => {
     if (loading) return
     setBatchSelection((selection) => {
@@ -1001,20 +1058,32 @@ export default function App() {
   }
   const openHistory = async () => {
     if (!selected || !(await flush())) return
+    setBusy(true)
     try {
       setHistoryEntries(await listHistory(selected.id))
       setHistoryPreviewId(null)
+      setHistoryError('')
       setModal('history')
     } catch (cause) {
       setNotice(errorText(cause))
+      setHistoryError(errorText(cause))
+    } finally {
+      setBusy(false)
     }
   }
   const openTrash = async () => {
+    setBusy(true)
     try {
       setDeletedEntries(await listTrash())
+      setTrashPreviewId(null)
+      setPendingPurge(null)
+      setTrashError('')
       setModal('trash')
     } catch (cause) {
       setNotice(errorText(cause))
+      setTrashError(errorText(cause))
+    } finally {
+      setBusy(false)
     }
   }
   const changeCollection = (
@@ -1263,29 +1332,30 @@ export default function App() {
                 aria-label="搜索知识卡片"
                 aria-controls="search-results"
                 aria-activedescendant={
-                  query && results[cursor]
-                    ? `result-${results[cursor].card.id}`
+                  searchFocused && activeResultId
+                    ? `result-${activeResultId}`
                     : undefined
                 }
                 placeholder="搜索任何片段…"
                 value={query}
+                onFocus={() => setSearchFocused(true)}
+                onBlur={() => setSearchFocused(false)}
                 onChange={(event) => setQuery(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.nativeEvent.isComposing || event.keyCode === 229)
                     return
                   if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
                     event.preventDefault()
-                    setCursor((value) => {
+                    if (results.length) {
                       const next = Math.max(
                         0,
                         Math.min(
                           results.length - 1,
-                          value + (event.key === 'ArrowDown' ? 1 : -1),
+                          cursor + (event.key === 'ArrowDown' ? 1 : -1),
                         ),
                       )
-                      setVisibleCount((count) => Math.max(count, next + 1))
-                      return next
-                    })
+                      rememberCursor(next)
+                    }
                   }
                   if (event.key === 'Enter' && results[cursor]) {
                     event.preventDefault()
@@ -1311,7 +1381,7 @@ export default function App() {
             </div>
             <div className="list-toolbar">
               <span>
-                {query ? `${results.length} 个匹配结果` : '最近更新'}
+                {query ? `${results.length} 个匹配结果` : sortNames[sortMode]}
                 {tag && (
                   <button
                     className="clear-filter"
@@ -1362,7 +1432,7 @@ export default function App() {
                   <button
                     onClick={() => {
                       const visible = results
-                        .slice(0, visibleCount)
+                        .slice(0, renderedCount)
                         .map(({ card }) => ({
                           id: card.id,
                           revision: card.revision,
@@ -1438,6 +1508,7 @@ export default function App() {
             )}
             <div
               id="search-results"
+              ref={listRef}
               className="card-list"
               role="listbox"
               aria-multiselectable={batchMode}
@@ -1450,19 +1521,22 @@ export default function App() {
                 </div>
               ) : results.length ? (
                 results
-                  .slice(0, visibleCount)
+                  .slice(0, renderedCount)
                   .map(({ card, matchField, snippet }, index) => (
                     <button
                       id={`result-${card.id}`}
                       role="option"
+                      tabIndex={index === cursor ? 0 : -1}
                       aria-selected={
                         batchMode
                           ? batchIdSet.has(card.id)
                           : card.id === selectedId
                       }
-                      className={`card-item ${batchMode ? (batchIdSet.has(card.id) ? 'batch-selected' : '') : card.id === selectedId ? 'selected' : ''} ${query && index === cursor ? 'keyboard-current' : ''}`}
+                      className={`card-item ${batchMode ? (batchIdSet.has(card.id) ? 'batch-selected' : '') : card.id === selectedId ? 'selected' : ''} ${searchFocused && index === cursor ? 'keyboard-current' : ''}`}
                       key={card.id}
+                      onFocus={() => rememberCursor(index)}
                       onClick={() => {
+                        rememberCursor(index)
                         if (batchMode) toggleBatchCard(card.id)
                         else void select(card)
                       }}
@@ -1479,13 +1553,12 @@ export default function App() {
                               index + (event.key === 'ArrowDown' ? 1 : -1),
                             ),
                           )
-                          setVisibleCount((count) => Math.max(count, next + 1))
+                          rememberCursor(next)
                           requestAnimationFrame(() =>
                             document
                               .getElementById(`result-${results[next].card.id}`)
                               ?.focus(),
                           )
-                          setCursor(next)
                         }
                       }}
                     >
@@ -1565,12 +1638,16 @@ export default function App() {
                 </div>
               )}
             </div>
-            {results.length > visibleCount && (
+            {results.length > renderedCount && (
               <button
                 className="load-more"
-                onClick={() => setVisibleCount((count) => count + 100)}
+                onClick={() =>
+                  setVisibleCount(
+                    (count) => Math.max(count, renderedCount) + 100,
+                  )
+                }
               >
-                加载更多（已显示 {visibleCount} / {results.length}）
+                加载更多（已显示 {renderedCount} / {results.length}）
               </button>
             )}
             <div className="list-bottom">
@@ -2478,11 +2555,11 @@ export default function App() {
                             <div className="restore-comparison">
                               <div>
                                 <strong>现有内容</strong>
-                                <pre>{cardContents(current)}</pre>
+                                <pre tabIndex={0}>{cardContents(current)}</pre>
                               </div>
                               <div>
                                 <strong>备份内容</strong>
-                                <pre>{cardContents(card)}</pre>
+                                <pre tabIndex={0}>{cardContents(card)}</pre>
                               </div>
                             </div>
                           )}
@@ -2612,6 +2689,20 @@ export default function App() {
           description="连续编辑会按时间保留快照，最多 20 个；删除或恢复前也会保存当前版本。"
           onClose={() => setModal(null)}
         >
+          <div className="recovery-toolbar">
+            <button
+              className="secondary-button"
+              disabled={busy}
+              onClick={() => void openHistory()}
+            >
+              刷新历史版本
+            </button>
+          </div>
+          {historyError && (
+            <p className="field-error" role="alert">
+              {historyError}
+            </p>
+          )}
           <div className="recovery-list">
             {historyEntries.length ? (
               historyEntries.map((entry) => (
@@ -2626,6 +2717,7 @@ export default function App() {
                   <div className="recovery-actions">
                     <button
                       className="secondary-button"
+                      aria-expanded={historyPreviewId === entry.id}
                       onClick={() =>
                         setHistoryPreviewId(
                           historyPreviewId === entry.id ? null : entry.id,
@@ -2642,7 +2734,7 @@ export default function App() {
                         try {
                           await restoreVersion(
                             selected.id,
-                            entry.id,
+                            entry,
                             selected.revision,
                           )
                           await discard()
@@ -2651,7 +2743,7 @@ export default function App() {
                             '已恢复所选历史版本；原内容已保留在历史记录中。',
                           )
                         } catch (cause) {
-                          setNotice(errorText(cause))
+                          setHistoryError(errorText(cause))
                         } finally {
                           setBusy(false)
                         }
@@ -2661,9 +2753,7 @@ export default function App() {
                     </button>
                   </div>
                   {historyPreviewId === entry.id && (
-                    <pre className="recovery-preview">
-                      {cardContents(entry.card)}
-                    </pre>
+                    <CardComparison before={entry.card} after={selected} />
                   )}
                 </div>
               ))
@@ -2677,10 +2767,25 @@ export default function App() {
       )}
       {modal === 'trash' && (
         <Dialog
+          wide
           title="回收站"
           description="删除的卡片会留在当前浏览器，恢复后重新出现在知识库。"
           onClose={() => setModal(null)}
         >
+          <div className="recovery-toolbar">
+            <button
+              className="secondary-button"
+              disabled={busy}
+              onClick={() => void openTrash()}
+            >
+              刷新回收站
+            </button>
+          </div>
+          {trashError && (
+            <p className="field-error" role="alert">
+              {trashError}
+            </p>
+          )}
           <div className="recovery-list">
             {deletedEntries.length ? (
               deletedEntries.map((entry) => (
@@ -2693,6 +2798,17 @@ export default function App() {
                     </small>
                   </div>
                   <div className="recovery-actions">
+                    <button
+                      className="secondary-button"
+                      aria-expanded={trashPreviewId === entry.id}
+                      onClick={() =>
+                        setTrashPreviewId(
+                          trashPreviewId === entry.id ? null : entry.id,
+                        )
+                      }
+                    >
+                      {trashPreviewId === entry.id ? '收起' : '查看内容'}
+                    </button>
                     <button
                       className="primary-button"
                       disabled={busy}
@@ -2708,7 +2824,7 @@ export default function App() {
                             )
                             return
                           }
-                          const restored = await restoreDeletedCard(entry.id)
+                          const restored = await restoreDeletedCard(entry)
                           await discard()
                           setDeleted(null)
                           setSelectedId(restored.id)
@@ -2717,7 +2833,7 @@ export default function App() {
                           setModal(null)
                           setNotice('卡片已从回收站恢复。')
                         } catch (cause) {
-                          setNotice(errorText(cause))
+                          setTrashError(errorText(cause))
                         } finally {
                           setBusy(false)
                         }
@@ -2727,7 +2843,9 @@ export default function App() {
                     </button>
                     <button
                       className="secondary-button"
+                      disabled={busy}
                       onClick={() => {
+                        setTrashError('')
                         setPendingPurge(entry)
                         setModal('purge')
                       }}
@@ -2735,6 +2853,13 @@ export default function App() {
                       永久删除
                     </button>
                   </div>
+                  {trashPreviewId === entry.id && (
+                    <section aria-label="已删除卡片内容">
+                      <pre className="recovery-preview" tabIndex={0}>
+                        {cardContents(entry.card)}
+                      </pre>
+                    </section>
+                  )}
                 </div>
               ))
             ) : (
@@ -2749,6 +2874,11 @@ export default function App() {
           description={`「${pendingPurge.card.title || '未命名卡片'}」及其历史版本会从当前浏览器移除，只能从之前导出的备份恢复。`}
           onClose={() => setModal('trash')}
         >
+          {trashError && (
+            <p className="field-error" role="alert">
+              {trashError}
+            </p>
+          )}
           <div className="dialog-actions">
             <button
               className="secondary-button"
@@ -2756,20 +2886,31 @@ export default function App() {
             >
               取消
             </button>
+            {trashError && (
+              <button
+                className="secondary-button"
+                disabled={busy}
+                onClick={() => void openTrash()}
+              >
+                刷新回收站
+              </button>
+            )}
             <button
               className="danger-button"
               disabled={busy}
               onClick={async () => {
                 setBusy(true)
                 try {
-                  await purgeDeletedCard(pendingPurge.id)
+                  await purgeDeletedCard(pendingPurge)
                   setDeletedEntries(await listTrash())
                   setDeleted(null)
                   setPendingPurge(null)
+                  setTrashPreviewId(null)
+                  setTrashError('')
                   setModal('trash')
                   setNotice('卡片已永久删除。')
                 } catch (cause) {
-                  setNotice(errorText(cause))
+                  setTrashError(errorText(cause))
                 } finally {
                   setBusy(false)
                 }

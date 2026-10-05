@@ -204,7 +204,7 @@ describe('local persistence', () => {
     expect(history.at(-1)?.card.body).toBe('第 2 版')
     const restored = await database.restoreVersion(
       current.id,
-      history.at(-1)!.id,
+      history.at(-1)!,
       current.revision,
     )
     expect(restored.body).toBe('第 2 版')
@@ -213,8 +213,57 @@ describe('local persistence', () => {
       '第 22 版',
     )
     await expect(
-      database.restoreVersion(current.id, history[0].id, current.revision),
+      database.restoreVersion(current.id, history[0], current.revision),
     ).rejects.toBeInstanceOf(ConflictError)
+  })
+
+  it('does not restore a changed history snapshot that reuses its ID, revision and timestamps', async () => {
+    const card = await database.createCard()
+    const current = await database.saveCard({ ...card, body: '当前正文' })
+    const [old] = await database.listHistory(card.id)
+    const snapshot = await database.exportWorkspace()
+    const replacement = {
+      ...old,
+      card: { ...old.card, body: '备份替换的历史正文' },
+    }
+    await database.replaceWorkspace(
+      { ...snapshot, history: [replacement] },
+      await database.workspaceMarker(),
+    )
+    await expect(
+      database.restoreVersion(card.id, old, current.revision),
+    ).rejects.toThrow(/刷新历史版本/)
+    expect(await database.cards.get(card.id)).toEqual(current)
+    expect(await database.listHistory(card.id)).toEqual([replacement])
+    const restored = await database.restoreVersion(
+      card.id,
+      replacement,
+      current.revision,
+    )
+    expect(restored.body).toBe(replacement.card.body)
+    expect(
+      (await database.listHistory(card.id)).some(
+        ({ card: version }) => version.body === current.body,
+      ),
+    ).toBe(true)
+  })
+
+  it('rejects history entries with changed recording times or removed snapshots', async () => {
+    const card = await database.createCard()
+    const current = await database.saveCard({ ...card, body: '保持当前内容' })
+    const [old] = await database.listHistory(card.id)
+    const replacement = { ...old, recordedAt: '2099-01-01T00:00:00.000Z' }
+    await database.history.put(replacement)
+    await expect(
+      database.restoreVersion(card.id, old, current.revision),
+    ).rejects.toThrow(/刷新历史版本/)
+    expect(await database.cards.get(card.id)).toEqual(current)
+    await database.history.delete(old.id)
+    await expect(
+      database.restoreVersion(card.id, replacement, current.revision),
+    ).rejects.toThrow(/已不存在.*刷新/)
+    expect(await database.cards.get(card.id)).toEqual(current)
+    expect(await database.listHistory(card.id)).toEqual([])
   })
 
   it('keeps one snapshot during rapid autosaves and adds one after a long edit or pause', async () => {
@@ -256,11 +305,12 @@ describe('local persistence', () => {
     expect((await database.listTrash()).map((entry) => entry.id)).toEqual([
       original.id,
     ])
-    const restored = await database.restoreDeletedCard(original.id)
+    const [deleted] = await database.listTrash()
+    const restored = await database.restoreDeletedCard(deleted)
     expect(restored.revision).toBe(original.revision + 1)
     expect(await database.listTrash()).toEqual([])
-    await expect(database.restoreDeletedCard(original.id)).rejects.toThrow(
-      /找不到/,
+    await expect(database.restoreDeletedCard(deleted)).rejects.toBeInstanceOf(
+      ConflictError,
     )
   })
 
@@ -269,12 +319,94 @@ describe('local persistence', () => {
     const changed = await database.saveCard({ ...original, body: '历史正文' })
     await database.deleteCard(changed)
     expect(await database.listHistory(original.id)).toHaveLength(2)
-    await database.purgeDeletedCard(original.id)
+    const [deleted] = await database.listTrash()
+    await database.purgeDeletedCard(deleted)
     expect(await database.listTrash()).toEqual([])
     expect(await database.listHistory(original.id)).toEqual([])
-    await expect(database.restoreDeletedCard(original.id)).rejects.toThrow(
-      /找不到/,
+    await expect(database.restoreDeletedCard(deleted)).rejects.toThrow(/找不到/)
+  })
+
+  it('rejects an old recycle-bin selection after another page restores, edits and deletes again', async () => {
+    const card = await database.createCard()
+    await database.deleteCard(card)
+    const [old] = await database.listTrash()
+    const other = new KnowledgeDB(database.name)
+    try {
+      const restored = await other.restoreDeletedCard(old)
+      const changed = await other.saveCard({
+        ...restored,
+        body: '其他页面的新内容',
+      })
+      await other.deleteCard(changed)
+      const [latest] = await other.listTrash()
+      const history = await other.listHistory(card.id)
+      await expect(database.restoreDeletedCard(old)).rejects.toThrow(
+        /刷新回收站/,
+      )
+      await expect(database.purgeDeletedCard(old)).rejects.toThrow(/刷新回收站/)
+      expect(await database.cards.get(card.id)).toBeUndefined()
+      expect(await database.listTrash()).toEqual([latest])
+      expect(await database.listHistory(card.id)).toEqual(history)
+      expect((await database.restoreDeletedCard(latest)).body).toBe(
+        changed.body,
+      )
+    } finally {
+      other.close()
+    }
+  })
+
+  it('checks exact recycled content even when a restored backup reuses revision and timestamps', async () => {
+    const card = await database.createCard()
+    await database.deleteCard(card)
+    const [old] = await database.listTrash()
+    const snapshot = await database.exportWorkspace()
+    const changed = {
+      ...old,
+      card: {
+        ...old.card,
+        body: '备份里的不同正文',
+        html: '<script>原文</script>',
+      },
+    }
+    await database.replaceWorkspace(
+      { ...snapshot, trash: [changed] },
+      await database.workspaceMarker(),
     )
+    await expect(database.restoreCard(old.card)).rejects.toThrow(/刷新回收站/)
+    await expect(database.restoreDeletedCard(old)).rejects.toThrow(/刷新回收站/)
+    await expect(database.purgeDeletedCard(old)).rejects.toThrow(/刷新回收站/)
+    expect(await database.listTrash()).toEqual([changed])
+    expect(await database.listHistory(card.id)).toEqual(snapshot.history)
+    await database.purgeDeletedCard(changed)
+    expect(await database.listTrash()).toEqual([])
+  })
+
+  it('checks the deletion timestamp even when recycled card content is identical', async () => {
+    const card = await database.createCard()
+    await database.deleteCard(card)
+    const [old] = await database.listTrash()
+    const latest = { ...old, deletedAt: '2099-01-01T00:00:00.000Z' }
+    await database.trash.put(latest)
+    await expect(database.restoreDeletedCard(old)).rejects.toThrow(/刷新回收站/)
+    await expect(database.purgeDeletedCard(old)).rejects.toThrow(/刷新回收站/)
+    expect(await database.listTrash()).toEqual([latest])
+    await database.purgeDeletedCard(latest)
+    expect(await database.listTrash()).toEqual([])
+  })
+
+  it('rolls back both recycle-bin removal and history when permanent deletion fails', async () => {
+    const card = await database.createCard()
+    await database.deleteCard(card)
+    const [deleted] = await database.listTrash()
+    const history = await database.listHistory(card.id)
+    const fail = () => {
+      throw new Error('模拟历史删除失败')
+    }
+    database.history.hook('deleting', fail)
+    await expect(database.purgeDeletedCard(deleted)).rejects.toThrow(/模拟/)
+    database.history.hook('deleting').unsubscribe(fail)
+    expect(await database.listTrash()).toEqual([deleted])
+    expect(await database.listHistory(card.id)).toEqual(history)
   })
 
   it('resets demo data together with its history and recycle bin', async () => {

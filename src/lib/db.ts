@@ -19,6 +19,28 @@ import type {
 const HISTORY_LIMIT = 20
 const HISTORY_INTERVAL_MS = 10 * 60 * 1000
 const EDITING_PAUSE_MS = 5 * 60 * 1000
+const sameCard = (current: Card, expected: Card) =>
+  (
+    [
+      'id',
+      'title',
+      'body',
+      'source',
+      'html',
+      'css',
+      'js',
+      'createdAt',
+      'updatedAt',
+      'revision',
+    ] as const
+  ).every((field) => current[field] === expected[field]) &&
+  current.tags.length === expected.tags.length &&
+  current.tags.every((tag, index) => tag === expected.tags[index])
+const trashChanged = () =>
+  new ConflictError(
+    null,
+    '回收站内容已在其他页面变化，请刷新回收站后重新选择。',
+  )
 const nextUpdatedAt = (card: Card) =>
   new Date(
     Math.max(
@@ -673,15 +695,23 @@ export class KnowledgeDB extends Dexie {
     )
   }
 
-  async restoreCard(card: Card): Promise<Card> {
+  async restoreCard(card: Card, deletedAt?: string): Promise<Card> {
     const [validated] = validateCards([card])
     return this.transaction('rw', this.cards, this.trash, async () => {
       const current = await this.cards.get(validated.id)
       if (current)
-        throw new ConflictError(current, '相同 ID 的卡片已存在，无法覆盖恢复。')
+        throw new ConflictError(
+          current,
+          '相同 ID 的卡片已存在，无法覆盖恢复；请刷新回收站后重新选择。',
+        )
       const deleted = await this.trash.get(validated.id)
-      if (!deleted || deleted.card.revision !== validated.revision)
-        throw new Error('回收站中已找不到这次删除的卡片。')
+      if (!deleted)
+        throw new Error('回收站中已找不到这张卡片，请刷新回收站后重新选择。')
+      if (
+        !sameCard(deleted.card, validated) ||
+        (deletedAt !== undefined && deleted.deletedAt !== deletedAt)
+      )
+        throw trashChanged()
       if (deleted.card.revision === Number.MAX_SAFE_INTEGER)
         throw new Error('记录版本号已达到上限，请复制为新卡片。')
       const restored = {
@@ -695,33 +725,47 @@ export class KnowledgeDB extends Dexie {
     })
   }
 
-  async restoreDeletedCard(id: string): Promise<Card> {
-    const deleted = await this.trash.get(id)
-    if (!deleted) throw new Error('回收站中已找不到这张卡片。')
-    return this.restoreCard(deleted.card)
+  async restoreDeletedCard(expected: DeletedCard): Promise<Card> {
+    if (expected.id !== expected.card.id) throw trashChanged()
+    return this.restoreCard(expected.card, expected.deletedAt)
   }
 
-  async purgeDeletedCard(id: string): Promise<void> {
+  async purgeDeletedCard(expected: DeletedCard): Promise<void> {
     await this.transaction('rw', this.trash, this.history, async () => {
-      if (!(await this.trash.get(id)))
-        throw new Error('回收站中已找不到这张卡片。')
-      await this.trash.delete(id)
-      await this.history.where('cardId').equals(id).delete()
+      const current = await this.trash.get(expected.id)
+      if (!current)
+        throw new Error('回收站中已找不到这张卡片，请刷新回收站后重新选择。')
+      if (
+        current.deletedAt !== expected.deletedAt ||
+        !sameCard(current.card, expected.card)
+      )
+        throw trashChanged()
+      await this.trash.delete(expected.id)
+      await this.history.where('cardId').equals(expected.id).delete()
     })
   }
 
   async restoreVersion(
     cardId: string,
-    historyId: string,
+    expected: CardHistoryEntry,
     expectedRevision: number,
   ): Promise<Card> {
     return this.transaction('rw', this.cards, this.history, async () => {
       const current = await this.cards.get(cardId)
       if (!current || current.revision !== expectedRevision)
         throw new ConflictError(current ?? null)
-      const entry = await this.history.get(historyId)
+      const entry = await this.history.get(expected.id)
       if (!entry || entry.cardId !== cardId)
-        throw new Error('找不到所选历史版本。')
+        throw new Error('所选历史版本已不存在，请刷新历史版本后重新选择。')
+      if (
+        expected.cardId !== cardId ||
+        entry.recordedAt !== expected.recordedAt ||
+        !sameCard(entry.card, expected.card)
+      )
+        throw new ConflictError(
+          current,
+          '所选历史版本已在其他页面变化，请刷新历史版本后重新选择。',
+        )
       if (current.revision === Number.MAX_SAFE_INTEGER)
         throw new Error('记录版本号已达到上限，请复制为新卡片。')
       await this.remember(current)
@@ -908,8 +952,10 @@ export const saveCard = (card: Card, generation?: string) =>
 export const deleteCard = (card: Card, generation?: string) =>
   db.deleteCard(card, generation)
 export const restoreCard = (card: Card) => db.restoreCard(card)
-export const restoreDeletedCard = (id: string) => db.restoreDeletedCard(id)
-export const purgeDeletedCard = (id: string) => db.purgeDeletedCard(id)
+export const restoreDeletedCard = (entry: DeletedCard) =>
+  db.restoreDeletedCard(entry)
+export const purgeDeletedCard = (entry: DeletedCard) =>
+  db.purgeDeletedCard(entry)
 export const listTrash = () => db.listTrash()
 export const listHistory = (cardId: string) => db.listHistory(cardId)
 export const exportWorkspace = () => db.exportWorkspace()
@@ -918,9 +964,9 @@ export const replaceWorkspace = (data: WorkspaceData, marker: string) =>
   db.replaceWorkspace(data, marker)
 export const restoreVersion = (
   cardId: string,
-  historyId: string,
+  entry: CardHistoryEntry,
   expectedRevision: number,
-) => db.restoreVersion(cardId, historyId, expectedRevision)
+) => db.restoreVersion(cardId, entry, expectedRevision)
 export const restoreBackupCards = (
   cards: Card[],
   decisions: Record<string, RestoreDecision>,
