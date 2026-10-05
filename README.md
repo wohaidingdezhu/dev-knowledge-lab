@@ -118,7 +118,7 @@ npm run test:e2e:offline
 
 关键逻辑测试覆盖：备份合法/非法结构、版本、协议、重复 ID、边界与完整往返；刷新式重开数据库恢复；双页面初始化和保存竞争；陈旧写入/删除拦截；配额失败与导入事务回滚；搜索排序/跨字段/高亮特殊字符；sandbox 安全序列化、CSP 和消息校验。存储失败使用 fake-indexeddb 与故障注入验证，不等同于测量所有浏览器的实际磁盘配额。
 
-浏览器实际走查与自动回归记录在 [VALIDATION.md](./VALIDATION.md)。搜索基准见 [SEARCH_PERF.md](./SEARCH_PERF.md)，批量整理基准见 [BATCH_PERF.md](./BATCH_PERF.md)。端到端测试每次使用隔离浏览器数据，覆盖 Chromium、Firefox、WebKit 和手机视口；GitHub Actions 在提交和 PR 时运行同样检查。
+浏览器实际走查与自动回归记录在 [VALIDATION.md](./VALIDATION.md)。搜索基准见 [SEARCH_PERF.md](./SEARCH_PERF.md)，批量整理基准见 [BATCH_PERF.md](./BATCH_PERF.md)。端到端测试每次使用隔离浏览器数据，覆盖 Chromium、Firefox、WebKit 和手机视口；GitHub Actions 在提交和 PR 时运行同样检查。CI 先检查单元测试、生产构建和离线流程，再按四个浏览器项目分别运行；一个项目失败不会取消其余项目，诊断文件按项目保存。
 
 ```text
 src/App.tsx                  卡片界面、导航、导入导出与交互

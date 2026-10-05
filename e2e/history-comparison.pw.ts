@@ -133,6 +133,8 @@ test('long history previews focus late changes and full content loads only on re
   page,
   isMobile,
 }) => {
+  // Importing and displaying 50,000-line notes is a functional check, not a latency benchmark.
+  test.slow()
   const prefix = '相同正文\n'.repeat(40000)
   const suffix = '\n相同后文'.repeat(10000)
   const old = {
@@ -142,7 +144,8 @@ test('long history previews focus late changes and full content loads only on re
     body: prefix + '历史段' + suffix,
   }
   const current = { ...old, body: prefix + '当前段' + suffix, revision: 2 }
-  await loadHistory(page, isMobile, old, current)
+  await test.step('import large workspace and open history', () =>
+    loadHistory(page, isMobile, old, current))
   await page
     .getByRole('button', { name: '查看内容', exact: true })
     .first()
@@ -167,10 +170,14 @@ test('long history previews focus late changes and full content loads only on re
     .allTextContents())
     expect(text.length).toBeLessThanOrEqual(6000)
   await expect(comparison.locator('.recovery-preview')).toHaveCount(0)
-  await comparison.getByText('查看完整历史内容', { exact: true }).click()
-  await expect(comparison.locator('.recovery-preview')).toContainText(old.body)
-  await comparison.getByText('查看完整历史内容', { exact: true }).click()
-  await expect(comparison.locator('.recovery-preview')).toHaveCount(0)
+  await test.step('expand and collapse the complete history text', async () => {
+    await comparison.getByText('查看完整历史内容', { exact: true }).click()
+    await expect(comparison.locator('.recovery-preview')).toContainText(
+      old.body,
+    )
+    await comparison.getByText('查看完整历史内容', { exact: true }).click()
+    await expect(comparison.locator('.recovery-preview')).toHaveCount(0)
+  })
 })
 
 for (const mode of ['changed', 'removed'] as const) {
