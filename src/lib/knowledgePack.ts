@@ -1,4 +1,5 @@
 import type { Card } from './types'
+import { additionalLessons } from './knowledgePackExtra'
 
 type Lesson = Pick<
   Card,
@@ -215,6 +216,7 @@ const lessons: Lesson[] = [
     css: `body{font-family:system-ui,sans-serif;padding:24px;background:#f6f7fb;color:#253149}main{max-width:380px;margin:auto}button{padding:12px 18px;border:0;border-radius:9px;background:#6258bd;color:white;cursor:pointer}button:focus-visible{outline:3px solid #f5a623;outline-offset:3px}p{padding:14px;background:white;border-radius:9px}`,
     js: `let pages = 0;\nconst status = document.querySelector('#status');\ndocument.querySelector('#advance').addEventListener('click', () => {\n  pages += 1;\n  status.textContent = '已读 ' + pages + ' 页';\n  console.log(status.textContent);\n});`,
   },
+  ...additionalLessons,
 ]
 
 export const KNOWLEDGE_PACK_SIZE = lessons.length

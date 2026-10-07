@@ -1049,11 +1049,53 @@ kbd {
 }
 .markdown pre code {
   padding: 0;
-  color: #747184;
+  color: #625f70;
   background: transparent;
   border: none;
   font-size: 11px;
   line-height: 1.9;
+}
+.markdown-code-block {
+  min-width: 0;
+  max-width: 100%;
+  margin: 18px 0;
+  border: 1px solid #edecf2;
+  border-radius: 7px;
+  background: #f7f7fa;
+}
+.markdown-code-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  font-size: 11px;
+  color: #62566f;
+}
+.markdown-code-toolbar > span:first-child {
+  margin-right: auto;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.markdown-code-toolbar .secondary-button {
+  padding: 5px 9px;
+  color: #62566f;
+  font-size: 11px;
+}
+.markdown-code-block > .field-error {
+  margin: 0;
+  padding: 0 12px 9px;
+}
+.markdown-code-block > pre {
+  margin: 0;
+  border: 0;
+  border-top: 1px solid #edecf2;
+  max-height: 320px;
+  overflow: auto;
+}
+.markdown-code-block > pre:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 .markdown table {
   border-collapse: collapse;
@@ -1110,7 +1152,7 @@ kbd {
   align-items: center;
   gap: 7px;
   font-size: 10px;
-  color: #a29bac;
+  color: #625f70;
 }
 .source-row {
   display: flex;
@@ -1120,7 +1162,7 @@ kbd {
 }
 .source-row input {
   font-size: 10px;
-  color: #9890a6;
+  color: #625f70;
   background: transparent;
   border: 0;
   width: 100%;

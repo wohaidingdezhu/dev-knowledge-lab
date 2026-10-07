@@ -1,6 +1,8 @@
+import { memo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { highlightParts } from '../lib/search'
+import { MarkdownCodeBlock } from './MarkdownCodeBlock'
 
 export function Highlight({ text, query }: { text: string; query: string }) {
   return (
@@ -12,13 +14,16 @@ export function Highlight({ text, query }: { text: string; query: string }) {
   )
 }
 
-export function Markdown({ body }: { body: string }) {
+export const Markdown = memo(function Markdown({ body }: { body: string }) {
   return (
     <div className="markdown">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         skipHtml
         components={{
+          pre: ({ children }) => (
+            <MarkdownCodeBlock>{children}</MarkdownCodeBlock>
+          ),
           a: ({ href, children }) =>
             href && /^https?:\/\//i.test(href) ? (
               <a href={href} target="_blank" rel="noreferrer noopener">
@@ -38,4 +43,4 @@ export function Markdown({ body }: { body: string }) {
       </ReactMarkdown>
     </div>
   )
-}
+})

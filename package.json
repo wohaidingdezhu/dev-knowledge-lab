@@ -16,6 +16,7 @@
     "benchmark:browser": "node scripts/benchmark-browser.mjs",
     "benchmark:batch": "node scripts/benchmark-batch.mjs",
     "benchmark:summary": "node scripts/benchmark-summary.mjs",
+    "benchmark:markdown": "node scripts/benchmark-markdown.mjs",
     "capture:demo": "node scripts/capture-demo.mjs"
   },
   "dependencies": {
