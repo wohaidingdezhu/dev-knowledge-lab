@@ -984,6 +984,75 @@ kbd {
   overflow-wrap: anywhere;
   min-height: 220px;
 }
+.note-reader {
+  min-width: 0;
+}
+.markdown-outline {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin-bottom: 16px;
+  border: 1px solid #e5deed;
+  border-radius: 7px;
+  background: #faf9fd;
+  color: #62566f;
+  font-size: 12px;
+}
+.markdown-outline > summary {
+  cursor: pointer;
+  padding: 12px;
+}
+.markdown-outline > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -3px;
+}
+.markdown-outline nav {
+  padding: 10px 12px;
+  border-top: 1px solid #e5deed;
+}
+.markdown-outline ul {
+  list-style: none;
+  margin: 0;
+  padding: 3px;
+  max-height: 240px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.markdown-outline li {
+  margin: 0;
+}
+.markdown-outline li button {
+  width: 100%;
+  text-align: start;
+  padding: 7px 6px;
+  border-radius: 4px;
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+}
+.markdown-outline li button:hover,
+.markdown-outline li button[aria-current] {
+  background: #ece7f4;
+}
+.markdown-outline-footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding-top: 9px;
+  font-size: 11px;
+}
+.markdown-outline-footer .secondary-button {
+  color: #62566f;
+  padding: 6px 9px;
+}
+.markdown :is(h1, h2, h3, h4, h5, h6) {
+  scroll-margin-top: 60px;
+}
+.markdown :is(h1, h2, h3, h4, h5, h6):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
 .markdown h1,
 .markdown h2,
 .markdown h3 {
@@ -1009,7 +1078,7 @@ kbd {
   margin: 10px 0 17px;
 }
 .markdown a {
-  color: #8670bd;
+  color: #6d54a5;
   text-decoration: underline;
   text-underline-offset: 3px;
 }
@@ -1413,10 +1482,12 @@ kbd {
   padding: 0;
   margin: 0;
   list-style: none;
+  max-height: 300px;
+  overflow-y: auto;
 }
 .knowledge-pack-list li {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
   padding: 10px 12px;
@@ -1425,9 +1496,81 @@ kbd {
   font-size: 12px;
 }
 .knowledge-pack-list small {
-  flex: none;
-  color: #867b93;
+  display: block;
+  margin-top: 5px;
+  color: #62566f;
   font-size: 10px;
+}
+.knowledge-pack-filters {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.65fr);
+  gap: 12px;
+}
+.knowledge-pack-filters label {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+}
+.knowledge-pack-filters input,
+.knowledge-pack-filters select {
+  min-width: 0;
+  width: 100%;
+  padding: 10px;
+  border: 1px solid #d8d2e2;
+  border-radius: 7px;
+  background: white;
+  color: #4e465a;
+  font: inherit;
+}
+.knowledge-pack-selection {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.knowledge-pack-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.knowledge-pack-choice input {
+  flex: none;
+  margin-top: 3px;
+}
+.knowledge-pack-list li > button {
+  flex: none;
+}
+.knowledge-pack-preview {
+  margin-top: 16px;
+  padding: 14px;
+  border: 1px solid #d8d2e2;
+  border-radius: 8px;
+}
+.knowledge-pack-preview h3 {
+  margin: 0;
+  font-size: 14px;
+}
+.knowledge-pack-preview h3:focus {
+  outline: 2px solid #6d54a5;
+  outline-offset: 3px;
+}
+.knowledge-pack-preview-body {
+  max-height: 320px;
+  overflow-y: auto;
+  margin-bottom: 12px;
+}
+.knowledge-pack-preview > a {
+  display: inline-block;
+  color: #6d54a5;
+  font-size: 12px;
+  margin: 0 12px 12px 0;
+}
+.knowledge-pack-error {
+  color: #9c3030;
+  font-size: 12px;
 }
 .knowledge-pack-note {
   color: #776b83;
@@ -1435,6 +1578,9 @@ kbd {
   line-height: 1.7;
 }
 @media (max-width: 480px) {
+  .knowledge-pack-filters {
+    grid-template-columns: minmax(0, 1fr);
+  }
   .knowledge-pack-list li {
     align-items: flex-start;
     flex-direction: column;

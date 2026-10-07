@@ -286,4 +286,100 @@ FAQ 或补充说明通常需要在阅读时展开。\`details\` 配合第一个 
       `details{padding:12px;border:1px solid #bbb;border-radius:8px;background:white}summary{cursor:pointer;font-weight:600}details[open] summary{margin-bottom:10px}`,
     js: `const details = document.querySelector('#details');\ndetails.addEventListener('toggle', () => {\n  document.querySelector('#status').textContent = '当前状态：' + (details.open ? '已展开' : '已收起');\n});`,
   },
+  {
+    id: 'guide-js-nullish-default',
+    title: '默认值：保留有效的零、空字符串和 false',
+    tags: ['JavaScript', '基础'],
+    source:
+      'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/Nullish_coalescing',
+    body: `## 现象
+
+库存是 0，却被“默认库存 10”替换了。逻辑或运算符 \`||\` 会把所有假值当作需要回退的值，包括 0、空字符串和 false；这些值可能正是用户想保留的数据。
+
+## 只为缺失值提供默认值
+
+\`value ?? fallback\` 仅在左侧为 null 或 undefined 时使用右侧。读取可选嵌套字段时可以结合 \`user.profile?.name ?? '访客'\`。可选链不会验证字段的类型，也不会把所有不合理的值自动纠正。
+
+## 动手试试
+
+运行实验比较六组输入，注意 NaN 也会被 ?? 保留，因此数值是否合法仍需另行检查。?? 与 || 或 && 混用时必须明确加括号，避免语法错误；选择回退规则应由业务含义决定。`,
+    html: `<main><h1>默认值比较</h1><pre id="result"></pre></main>`,
+    css: demoStyle,
+    js: `const values = [['零', 0], ['空字符串', ''], ['false', false], ['null', null], ['undefined', undefined], ['NaN', NaN]];\nconst show = value => value === '' ? '(空字符串)' : String(value);\ndocument.querySelector('#result').textContent = values.map(([name, value]) => name + '：|| ' + show(value || '默认') + ' / ?? ' + show(value ?? '默认')).join('\\n');`,
+  },
+  {
+    id: 'guide-web-structured-clone',
+    title: 'structuredClone：复制嵌套数据及其边界',
+    tags: ['Web API', '数据处理'],
+    source:
+      'https://developer.mozilla.org/en-US/docs/Web/API/Window/structuredClone',
+    body: `## 使用场景
+
+需要复制包含嵌套对象的数据时，浅拷贝不能隔离内部状态。structuredClone 使用结构化克隆算法，可以复制受支持的数据类型，并保留循环引用关系。
+
+## 观察复制结果
+
+示例复制个人资料、Date 和指向自身的字段。改变副本的资料，不影响原数据；副本中的循环字段指向副本自己。JSON 序列化遇到循环引用会失败，日期也会改变表示，不能把它当作等价替代。
+
+## 注意边界
+
+并非所有值都可复制。函数等不支持的输入会抛出 DataCloneError，必须按业务处理失败；克隆也不保证保留任意自定义对象的原型和属性描述符。示例不使用 transfer：转移资源会使原资源不可用，需要专门设计所有权。
+
+## 动手试试
+
+运行后点击“尝试复制函数”，观察明确的失败反馈，再尝试增加一个普通数组字段。`,
+    html: `<main><h1>深拷贝实验</h1><pre id="result"></pre><button id="unsupported" type="button">尝试复制函数</button><p id="status" role="status"></p></main>`,
+    css: demoStyle,
+    js: `const original = { profile: { name: '原名字' }, date: new Date('2026-01-01T00:00:00Z') };\noriginal.self = original;\nconst copy = structuredClone(original);\ncopy.profile.name = '副本名字';\ndocument.querySelector('#result').textContent = '原资料：' + original.profile.name + '\\n副本资料：' + copy.profile.name + '\\n日期类型保留：' + (copy.date instanceof Date) + '\\n副本循环指向自身：' + (copy.self === copy);\ndocument.querySelector('#unsupported').addEventListener('click', () => {\n  try {\n    structuredClone({ run() {} });\n  } catch (error) {\n    document.querySelector('#status').textContent = '无法复制函数：' + error.name;\n  }\n});`,
+  },
+  {
+    id: 'guide-js-set-deduplicate',
+    title: 'Set 去重：相同值和相似对象的区别',
+    tags: ['JavaScript', '数据处理'],
+    source:
+      'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Set',
+    body: `## 使用场景
+
+标签列表中重复的文字可以通过 \`[...new Set(tags)]\` 去掉。Set 保留首次成功插入的顺序，重复添加同一个值不会把它移到末尾。
+
+## 对象不会按内容自动去重
+
+两个新建的 \`{ id: 1 }\` 是不同对象，Set 会保留两者；重复使用同一引用则只保留一份。需要按业务 ID 去重时，应明确用 ID 作为键，并决定保留第一条还是最后一条。
+
+## 比较规则
+
+Set 使用 SameValueZero：多个 NaN 视为相同，正零与负零也视为相同。字符串的大小写或空格不会自动归一化。清洗标签应先定义规则，再去重，避免误删本来不同的值。
+
+## 动手试试
+
+观察文字、对象和特殊数字的去重结果，再改成按 ID 保留最后一条，说明预期会怎样变化。`,
+    html: `<main><h1>值与对象去重</h1><pre id="result"></pre></main>`,
+    css: demoStyle,
+    js: `const labels = ['CSS', 'JS', 'CSS'];\nconst shared = { id: 1 };\nconst objects = [shared, shared, { id: 1 }];\nconst seen = new Set();\nconst byId = objects.filter(item => {\n  if (seen.has(item.id)) return false;\n  seen.add(item.id);\n  return true;\n});\ndocument.querySelector('#result').textContent = '标签：' + [...new Set(labels)].join(', ') + '\\n按对象引用：' + new Set(objects).size + ' 条\\n按 ID 保留第一条：' + byId.length + ' 条\\nNaN 与正负零：' + new Set([NaN, NaN, 0, -0]).size + ' 个值';`,
+  },
+  {
+    id: 'guide-web-response-errors',
+    title: '请求错误：HTTP 失败与 JSON 解析失败分开处理',
+    tags: ['Web API', '异步'],
+    source:
+      'https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API/Using_Fetch',
+    body: `## 为什么只写 catch 不够
+
+fetch 收到 HTTP 404 或 500 时通常仍会兑现 Promise。必须先检查 response.ok 或状态码，再决定是否读取成功数据；网络失败属于另一类异常。
+
+## 分开检查状态和数据
+
+先判断 \`response.ok\`，再 \`await response.json()\`。即使 HTTP 成功，正文也可能不是合法 JSON；解析成功后还需要验证业务结构。响应体通常只能消费一次，不要为了日志又读取一遍同一个正文。
+
+## 离线实验
+
+本实验用本地构造的 Response 模拟成功、HTTP 404 和损坏 JSON，不发送网络请求。它验证的是收到响应后的处理分支，不能模拟真实网络、跨域权限或服务端行为。
+
+## 动手试试
+
+依次运行三种情况，观察状态提示，再把成功数据改成没有 name 字段，确认业务结构检查也能发现错误。实际应用还应提供取消、重试和清楚的用户反馈。`,
+    html: `<main><h1>响应处理实验</h1><button data-mode="ok" type="button">模拟成功</button><button data-mode="http" type="button">模拟 HTTP 404</button><button data-mode="json" type="button">模拟损坏 JSON</button><p id="status" role="status">请选择一种响应</p></main>`,
+    css: demoStyle,
+    js: `const status = document.querySelector('#status');\nconst buttons = [...document.querySelectorAll('button')];\nfor (const button of buttons) {\n  button.addEventListener('click', async () => {\n    buttons.forEach(item => { item.disabled = true; });\n    try {\n      const mode = button.dataset.mode;\n      const response = new Response(mode === 'json' ? '{broken' : JSON.stringify({ name: '笔记' }), { status: mode === 'http' ? 404 : 200 });\n      if (!response.ok) throw new Error('HTTP ' + response.status);\n      let data;\n      try { data = await response.json(); } catch { throw new Error('JSON 解析失败'); }\n      if (!data || typeof data.name !== 'string') throw new Error('数据结构不符合预期');\n      status.textContent = '读取成功：' + data.name;\n    } catch (error) {\n      status.textContent = '读取失败：' + error.message;\n    } finally {\n      buttons.forEach(item => { item.disabled = false; });\n    }\n  });\n}`,
+  },
 ]

@@ -4,6 +4,42 @@ import { makeKnowledgePackCards } from '../src/lib/knowledgePack'
 import { loadCard } from './helpers/load-card'
 
 const scenarios: Record<string, (frame: FrameLocator) => Promise<void>> = {
+  'guide-js-nullish-default': async (frame) => {
+    await expect(frame.locator('#result')).toHaveText(
+      [
+        '零：|| 默认 / ?? 0',
+        '空字符串：|| 默认 / ?? (空字符串)',
+        'false：|| 默认 / ?? false',
+        'null：|| 默认 / ?? 默认',
+        'undefined：|| 默认 / ?? 默认',
+        'NaN：|| 默认 / ?? NaN',
+      ].join('\n'),
+    )
+  },
+  'guide-web-structured-clone': async (frame) => {
+    await expect(frame.locator('#result')).toHaveText(
+      '原资料：原名字\n副本资料：副本名字\n日期类型保留：true\n副本循环指向自身：true',
+    )
+    await frame.getByRole('button', { name: '尝试复制函数' }).click()
+    await expect(frame.locator('#status')).toHaveText(
+      '无法复制函数：DataCloneError',
+    )
+  },
+  'guide-js-set-deduplicate': async (frame) => {
+    await expect(frame.locator('#result')).toHaveText(
+      '标签：CSS, JS\n按对象引用：2 条\n按 ID 保留第一条：1 条\nNaN 与正负零：2 个值',
+    )
+  },
+  'guide-web-response-errors': async (frame) => {
+    await frame.getByRole('button', { name: '模拟成功' }).click()
+    await expect(frame.locator('#status')).toHaveText('读取成功：笔记')
+    await frame.getByRole('button', { name: '模拟 HTTP 404' }).click()
+    await expect(frame.locator('#status')).toHaveText('读取失败：HTTP 404')
+    await frame.getByRole('button', { name: '模拟损坏 JSON' }).click()
+    await expect(frame.locator('#status')).toHaveText('读取失败：JSON 解析失败')
+    await frame.getByRole('button', { name: '模拟成功' }).click()
+    await expect(frame.locator('#status')).toHaveText('读取成功：笔记')
+  },
   'guide-js-debounce': async (frame) => {
     const input = frame.getByLabel('搜索词')
     await input.fill('停下再处理')

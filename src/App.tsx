@@ -107,6 +107,7 @@ import { CodeLab } from './components/CodeLab'
 import { CardComparison } from './components/CardComparison'
 import { SourceEditor } from './components/LazySourceEditor'
 import { Highlight, Markdown } from './components/Markdown'
+import { KnowledgePackBrowser } from './components/KnowledgePackBrowser'
 
 const date = (value: string) =>
   new Date(value).toLocaleDateString('zh-CN', {
@@ -633,17 +634,23 @@ export default function App() {
       setBusy(false)
     }
   }
-  const addKnowledgePack = async () => {
-    if (!(await flush())) {
-      setNotice('当前修改尚未保存，请先解决保存问题再添加知识卡片。')
-      return
-    }
+  const addKnowledgePack = async (ids: string[]) => {
     setBusy(true)
     try {
-      const firstMissing = knowledgePack.find(
+      if (!(await flush())) {
+        const message = '当前修改尚未保存，请先解决保存问题再添加知识卡片。'
+        setNotice(message)
+        return message
+      }
+      const requested = new Set(ids)
+      const additions = makeKnowledgePackCards().filter((card) =>
+        requested.has(card.id),
+      )
+      if (!additions.length) return '请先选择知识卡片。'
+      const firstMissing = additions.find(
         (card) => !cardsRef.current.some((existing) => existing.id === card.id),
       )
-      const result = await importCards(makeKnowledgePackCards(), 'skip')
+      const result = await importCards(additions, 'skip')
       setModal(null)
       setSidebarOpen(false)
       setDeleted(null)
@@ -659,10 +666,10 @@ export default function App() {
       setNotice(
         result.added
           ? `已加入 ${result.added} 张知识卡片；已有 ${result.skipped} 张保持原样。`
-          : '知识包已全部加入，现有卡片和修改保持原样。',
+          : '所选卡片已在工作区，现有卡片和修改保持原样。',
       )
     } catch (cause) {
-      setNotice(errorText(cause))
+      return errorText(cause)
     } finally {
       setBusy(false)
     }
@@ -1862,7 +1869,7 @@ export default function App() {
                           </div>
                         </>
                       ) : (
-                        <Markdown body={selected.body} />
+                        <Markdown key={selected.id} body={selected.body} />
                       )}
                       <div className="source-section">
                         <div className="source-label">
@@ -2139,37 +2146,17 @@ export default function App() {
         <Dialog
           title="前端知识内容包"
           description={`包含 ${knowledgePack.length} 张专题笔记，每张都有可运行示例和参考来源。只添加当前工作区缺少的卡片，已有卡片及其修改会保留。`}
-          onClose={() => setModal(null)}
+          onClose={() => {
+            if (!busy) setModal(null)
+          }}
         >
-          <ul className="knowledge-pack-list">
-            {knowledgePack.map((card) => (
-              <li key={card.id}>
-                <span>{card.title}</span>
-                <small>
-                  {cards.some((existing) => existing.id === card.id)
-                    ? '已在工作区'
-                    : card.tags.join(' · ')}
-                </small>
-              </li>
-            ))}
-          </ul>
-          <p className="knowledge-pack-note">
-            添加是主动操作：如果以前删除过包内卡片，再次添加会把它重新加入。
-          </p>
-          <div className="dialog-actions">
-            <button className="secondary-button" onClick={() => setModal(null)}>
-              取消
-            </button>
-            <button
-              className="primary-button"
-              onClick={() => void addKnowledgePack()}
-              disabled={busy || !knowledgePackMissing.length}
-            >
-              {knowledgePackMissing.length
-                ? `添加 ${knowledgePackMissing.length} 张知识卡片`
-                : '已全部加入'}
-            </button>
-          </div>
+          <KnowledgePackBrowser
+            lessons={knowledgePack}
+            existingIds={cards.map((card) => card.id)}
+            busy={busy}
+            onAdd={addKnowledgePack}
+            onClose={() => setModal(null)}
+          />
         </Dialog>
       )}
       {modal === 'batch-tag' && (

@@ -52,7 +52,9 @@ export function MarkdownCodeBlock({ children }: { children?: ReactNode }) {
     <div className="markdown-code-block" role="group" aria-label="代码片段">
       <div className="markdown-code-toolbar">
         <span>{language || '代码片段'}</span>
-        {status === 'copied' && <span role="status">已复制</span>}
+        <span role="status" aria-live="polite" aria-atomic="true">
+          {status === 'copied' ? '已复制' : ''}
+        </span>
         <button
           type="button"
           className="secondary-button"

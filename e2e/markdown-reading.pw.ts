@@ -4,7 +4,7 @@ import { makeSeedCards } from '../src/lib/seeds'
 import { loadCard } from './helpers/load-card'
 
 const code = 'const text = "<b>原文</b>";\n  console.log(text);\n'
-const body = `## 阅读代码\n\n行内代码 \`inline()\`。\n\n\`\`\`js\n${code}\`\`\`\n\n\`\`\`\n未标注语言\n\`\`\``
+const body = `## 阅读代码\n\n行内代码 \`inline()\`。\n\n\`\`\`js\n${code}\`\`\`\n\n## 无语言示例\n\n\`\`\`\n未标注语言\n\`\`\``
 async function loadNote(page: Page, isMobile: boolean, text = body) {
   await loadCard(page, isMobile, {
     ...makeSeedCards()[0],
@@ -46,6 +46,14 @@ test('code blocks copy exact text with keyboard feedback and accessible reading 
   expect(await page.evaluate(() => (window as any).copiedText)).toBe(
     '未标注语言\n',
   )
+  await page.locator('.markdown-outline > summary').click()
+  await page
+    .getByRole('navigation', { name: '笔记目录' })
+    .getByRole('button', { name: '阅读代码', exact: true })
+    .click()
+  // Navigating or opening the outline must not reset code-copy state.
+  await expect(blocks.first().getByRole('status')).toHaveText('已复制')
+  await expect(blocks.last().getByRole('status')).toHaveText('已复制')
   const results = await new AxeBuilder({ page })
     .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
     .analyze()
@@ -163,7 +171,7 @@ test('pending copy completion cannot mark a changed note as copied', async ({
     page
       .getByRole('group', { name: '代码片段', exact: true })
       .getByRole('status'),
-  ).toHaveCount(0)
+  ).toHaveText('')
   await page.getByRole('button', { name: '复制代码' }).click()
   await page.evaluate(() => (window as any).copyResolvers.shift()())
   await expect(
@@ -171,4 +179,42 @@ test('pending copy completion cannot mark a changed note as copied', async ({
       .getByRole('group', { name: '代码片段', exact: true })
       .getByRole('status'),
   ).toHaveText('已复制')
+})
+
+test('reading feedback resets on switching to a duplicate with identical body', async ({
+  page,
+  isMobile,
+}) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: async () => {} },
+    })
+  })
+  await loadNote(page, isMobile)
+  const block = page
+    .getByRole('group', { name: '代码片段', exact: true })
+    .first()
+  await block.getByRole('button', { name: '复制代码' }).click()
+  await expect(block.getByRole('status')).toHaveText('已复制')
+  await page.locator('.markdown-outline > summary').click()
+  await expect(page.getByRole('navigation', { name: '笔记目录' })).toBeVisible()
+  const headingId = await page
+    .locator('.markdown h2')
+    .first()
+    .getAttribute('id')
+  await page.getByRole('button', { name: '复制当前卡片' }).click()
+  await expect(page.locator('.toast')).toContainText('已创建独立副本')
+  await expect(page.getByRole('textbox', { name: '卡片标题' })).toHaveValue(
+    '阅读代码测试（副本）',
+  )
+  await expect(block.getByRole('status')).toHaveText('')
+  await expect(
+    page.getByRole('navigation', { name: '笔记目录' }),
+  ).not.toBeVisible()
+  await expect(page.locator('.markdown h2').first()).not.toHaveAttribute(
+    'id',
+    headingId!,
+  )
+  await expect(block.locator('pre')).toHaveText(code)
 })
